@@ -1,0 +1,2453 @@
+---
+title: "Studio sul Covid 19 in Italia"
+author: "Marco Marchetti"
+date: "16 Maggio 2020"
+output:
+  html_document:
+    code_folding: hide
+    fig_width: 10
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+# 1 Introduzione
+
+Questo studio sul **Covid-19 in Italia** ha l'obiettivo di fornire una **fotografia del contagio** ed una una panoramica dei suoi impatti su alcuni settori importanti a livello nazionale: mondo del lavoro, mobilita', sistema sanitario. Lo studio fornisce anche una **ipotesi di modello di diffusione del contagio** basandosi su informazioni a livello nazionale ed internazionale.
+
+Il livello di dettaglio dello studio varia a seconda della disponibilita' delle informazioni trovate: Nazioni, Regioni, Province. Lo studio viene aggiornato quotidianamente con nuove informazioni provenienti dalle sorgenti dati identificate.
+
+Le **sorgenti dati** prese in considerazione sono: 
+
+* Protezione Civile: Dati covid-19 Italiani aggiornati quotidianamente. <https://github.com/pcm-dpc/COVID-19>
+
+* Istat: Dati Popolazione, Personale Medico, Patologie per regione, Dati Economici.
+
+* Istituto Superiore di Sanita': Patologie pregresse dei pazienti deceduti per covid-19. <https://www.epicentro.iss.it/coronavirus/sars-cov-2-decessi-italia>
+
+* Kaggle Covid-19 lockdown dataset: Date sui principali Lockdown internazionali.   <https://www.kaggle.com/jcyzag/covid19-lockdown-dates-by-country>,  
+
+* Apple Trends: Dati sulla mobilita'. <https://www.apple.com/covid19/mobility>
+
+* Johns Hopkins University Center for Systems Science and Engineering (JHU CSSE): Dati sui casi worldwide. <https://github.com/CSSEGISandData/COVID-19>
+
+* Kaggle dataset JHU (pre elaborato)  <https://www.kaggle.com/c/covid19-global-forecasting-week-4/data>
+
+
+Alcune **note sui dati**
+
+* I dati della protezione civile dovrebbero avere un **BIAS** in quanto derivano dai dati dei  tamponi eseguiti su persone con sintomi e su persone a rischio per il lavoro che svolgono; il processo consente dunque che l'inclusione delle persone nel campione di riferimento dipenda da queste caratteristiche. E' necessario ricordare che questi dati non danno quindi l'effettiva diffusione del contagio in quanto asintomatici o persone con lievi sintomi non sono oggetto di valutazione di positivita' al virus e non ricadono nei dati raccolti. 
+
+* Ulteriori punti di attenzione sono la **completezza** e la **correttezza** dei **dati** raccolti dovuta, per esempio, a tempistiche e procedure di acquisizione dei dati sui tamponi differenti tra regioni .
+
+* Alcune tipologie di dati non sono recenti ma sono le ultime diponibili pubblicamente da ISTAT.
+
+
+Per una corretta interpretazione dello studio e' altresi' necessario ricordare le date dei 3 **provvedimenti del governo**:
+
+* 25 Febbraio (giorno 2 della serie storica): chiusura scuole, restrizioni mobilita' in Lombardia, Veneto, Piemonte, Emilia-Romagna, Liguria and Friuli.
+
+* 8 Marzo (giorno 14 della serie storica): lockdown di Lombardia, Piemonte, Veneto, Emilia-Romagna, Marche.
+
+* 12 Marzo (giorno 18 della serie storica): lockdown nazionale.
+
+
+```{r, message=FALSE, warning=FALSE, results="hide", echo=FALSE}
+
+library(ggplot2)
+library(dplyr)
+library(tidyverse)      # data manipulation and visualization
+library(directlabels)
+library(devtools)
+library(rstan) # per calcolo sigmoide
+library(tidygraph)
+library(ggraph)
+library(GGally)
+library(tidyr)
+library(igraph) # Rete
+library(visNetwork) # Rete
+library(networkD3)
+library(highcharter)
+library(patchwork)
+library(hrbrthemes)
+library(deSolve) # SIR
+library(DT) # data table print
+library(gridExtra) # plot ggplot side by side
+library(tseries)
+library(forecast)
+library(stats)
+library(minpack.lm)
+library(mltools)
+library(nlstools)
+library(readxl)
+library(R0)
+library(EpiEstim)
+
+
+##########################################################################################
+### LETTURA  DATI ########################################################################
+##########################################################################################
+# sostituiti con editpad alcune denominazioni regioni nei file ISTAT
+# sostituita var territorio con denominazione_regione
+# Dataframe Economia originali istat con sostituzione variabili da codice
+
+# Variabili Ambiente 
+setwd(dir = "G:/DOCUMENTI/Data Science/R/Lavori/Covid")
+
+#Protezione Civile
+RegioniToday <- read.csv("Data/dpc-covid19-ita-regioni-latest.csv",stringsAsFactors=FALSE)
+ProvinceToday <- read.csv("Data/dpc-covid19-ita-province-latest.csv",stringsAsFactors=FALSE)
+NazionaleToday <- read.csv("Data/dpc-covid19-ita-andamento-nazionale-latest.csv",stringsAsFactors=FALSE)
+Nazionale <- read.csv("Data/dpc-covid19-ita-andamento-nazionale.csv",stringsAsFactors=FALSE)
+Regioni <- read.csv("Data/dpc-covid19-ita-regioni.csv",stringsAsFactors=FALSE)
+Province <- read.csv("Data/dpc-covid19-ita-province.csv",stringsAsFactors=FALSE)
+
+#ISTAT - SSN -Sanita' e Popolazione
+PercentualeDecessiCovid <- read.csv("Data/PercentualeDecessiCovidSSN.csv",stringsAsFactors=FALSE)
+TotaleDecessi <- read.csv("Data/DecessiItalia2017.csv",stringsAsFactors=FALSE)
+Malattie <- read.csv("Data/MalattieItalia2018.csv",stringsAsFactors=FALSE)
+PersonaleMedico <- read.csv("Data/PersonaleMedicoItalia2017.csv",stringsAsFactors=FALSE)
+Popolazione <- read.csv("Data/popolazione-regioni-2019.csv",stringsAsFactors=FALSE)
+
+#ISTAT - Economia e Settori (worksheet Excel)
+Economia <- read.csv("Data/EconomiciItalia2017Summary.csv",stringsAsFactors=FALSE)
+Ateco <- read.csv("Data/Ateco.csv",stringsAsFactors=FALSE)
+Settori_attivi_industria <- read_excel("Data/dati_comunali_2017_DPCM_covid19.xlsx", sheet = "Settori attivi_industria")
+settori_attivi_servizi <- read_excel("Data/dati_comunali_2017_DPCM_covid19.xlsx", sheet = "settori attivi servizi")
+settori_sospesi_industria <- read_excel("Data/dati_comunali_2017_DPCM_covid19.xlsx", sheet = "settori sospesi industria")
+settori_sospesi_servizi <- read_excel("Data/dati_comunali_2017_DPCM_covid19.xlsx", sheet = "settori sospesi servizi")
+
+#ISTAT - APPLE - Mobilita'
+MatriceOD <- read.csv("Data/matrix_pendo2011_10112014-OUT.csv",stringsAsFactors=FALSE)
+
+ita <- readLines("Data/it-all.geo.json")
+ita <- gsub(".* = ", "", ita)
+ita <- jsonlite::fromJSON(ita, simplifyVector = FALSE)
+Mobilita <- read.csv("Data/applemobilitytrends-latest.csv",stringsAsFactors=FALSE)
+LockDown <- read.csv("Data/countryLockdowndates.csv",stringsAsFactors=FALSE)
+
+# Dati JHU 
+train <- read.csv("Data/train.csv", stringsAsFactors = FALSE)
+test <- read.csv("Data/test.csv", stringsAsFactors = FALSE)
+wwcases <- read.csv("Data/JHUwwcases.csv", stringsAsFactors = FALSE)
+
+##########################################################################################
+### PREPARAZIONE  DATI ###################################################################
+##########################################################################################
+
+# Prepara matrice Nazionale e Regioni ###############################################
+Nazionale$data<- substr(Nazionale$data, 1, 10)
+Regioni$data<- substr(Regioni$data, 1, 10)
+
+# Prepara matrice RegioniToday (base dati regionali con popolazione) ###################
+RegioniToday <- left_join(RegioniToday,Popolazione,by="denominazione_regione")
+RegioniToday$positivi_per_densita <- (RegioniToday$densita*RegioniToday$totale_positivi)/RegioniToday$totale
+
+# Prepara matrice Regioni #########################################################
+myvars <- c("denominazione_regione", "totale_casi")
+RegioniTodayTotCasi <- RegioniToday[myvars]
+Regioni <- left_join(Regioni,RegioniTodayTotCasi,by="denominazione_regione")
+Regioni <- left_join(Regioni,Popolazione,by="denominazione_regione")
+names(Regioni)[names(Regioni) == "totale_casi.y"] <- "totale_casi_Today"
+names(Regioni)[names(Regioni) == "totale_casi.x"] <- "totale_casi"
+rm(RegioniTodayTotCasi)
+Regioni$per_positivi <- (100*Regioni$totale_positivi)/Regioni$totale
+Regioni$per_tamponi <- (100*Regioni$tamponi)/Regioni$totale
+Regioni$per_isolamento_domiciliare <- (100*Regioni$isolamento_domiciliare)/Regioni$totale_casi_Today
+Regioni$per_ricoverati_con_sintomi <- (100*Regioni$ricoverati_con_sintomi)/Regioni$totale_casi_Today
+Regioni$per_terapia_intensiva <- (100*Regioni$terapia_intensiva)/Regioni$totale_casi_Today
+Regioni$per_deceduti <- (100*Regioni$deceduti)/Regioni$totale_casi_Today
+
+# Prepara matrice Malattie #########################################################
+# Aggiungo: decessi per covid SSN + decessi totali regioni da prot. Civile
+Malattie$Flag.Codes <- NULL
+Malattie$Flags <- NULL
+Malattie$TIME <- NULL
+Malattie$Seleziona.periodo <- NULL
+Malattie<-Malattie[(Malattie$MISURA_AVQ=="THV"),] # solo valori in migliaia
+Malattie$Value <- Malattie$Value *1000 # valore in migliaia
+names(Malattie)[names(Malattie) == "Value"] <- "persone_con_malattie"
+Malattie$MISURA_AVQ <- NULL
+Malattie$Misura <- NULL
+Malattie$TIPO_DATO_AVQ <- NULL
+Malattie <- left_join(Malattie,PercentualeDecessiCovid,by="Patologie")
+myvars <- c("denominazione_regione", "deceduti")
+RegioniTodaySubset <- RegioniToday[myvars]
+Malattie <- left_join(Malattie,RegioniTodaySubset,by="denominazione_regione")
+rm(RegioniTodaySubset)
+Malattie <- Malattie[complete.cases(Malattie), ]
+Malattie$persone_a_rischio <- (Malattie$persone_con_malattie * Malattie$percentuale_cause_decesso)/100
+Malattie$persone_a_rischio <- Malattie$persone_a_rischio - Malattie$deceduti
+Malattie<-Malattie[!(Malattie$Patologie=="buona salute"),] # elimino persone senza patologie
+Malattie<-Malattie[!(Malattie$Patologie=="una malattia cronica"),] # elimino duplicati una patologia
+Malattie<-Malattie[!(Malattie$Patologie=="due malattie croniche"),] # elimino duplicati due patologie
+
+# prepara Personale medico ###########################################################
+# seleziona medici e infermieri in totale
+PersonaleMedico$Flags <- NULL
+PersonaleMedico$Flag.Codes <- NULL
+PersonaleMedico$TIME <- NULL
+PersonaleMedico$Seleziona.periodo <- NULL
+PersonaleMedico$TIPO_DATO14 <- NULL
+PersonaleMedico$Tipo.dato <- NULL
+PersonaleMedico$PERSONALE <- NULL
+PersonaleMedico <- PersonaleMedico[(PersonaleMedico$Tipo.di.qualifica.professionale == "totale medici (generici e specialisti)" |
+                                    PersonaleMedico$Tipo.di.qualifica.professionale ==  "professioni sanitarie infermieristiche"),]
+PersonaleMedico$Tipo.di.qualifica.professionale <- NULL
+PersonaleMedico <- PersonaleMedico %>% 
+                    group_by(denominazione_regione) %>% 
+                    summarise(numero_personale_medico = sum(Value))
+
+# Prepara matrici Economia e Settori ##############################################################
+# numero addetti delle imprese attive (valori medi)
+Economia$D2 <- NULL
+Economia$Tipo.dato <- NULL
+Economia$D4 <- NULL
+Economia$Classe.di.addetti <- NULL
+Economia$D5 <- NULL
+Economia$Forma.giuridica <- NULL
+Economia$D6 <- NULL
+Economia$Impresa.con.dipendenti <- NULL
+Economia$D7 <- NULL
+Economia$Carattere.artigiano <- NULL
+Economia$Seleziona.periodo <- NULL
+Economia$D8 <- NULL
+Economia$Flag.Codes <- NULL
+Economia$Flags <- NULL
+Economia$Value <- round(Economia$Value, digits = 0)
+
+#Correzione Nomi
+names(Economia)[names(Economia) == "Territorio"] <- "denominazione_provincia"
+Economia$denominazione_provincia <- gsub("Valle d'Aosta / Vallée d'Aoste", 'Aosta', Economia$denominazione_provincia )
+Economia$denominazione_provincia <- gsub("Bolzano / Bozen", 'Bolzano', Economia$denominazione_provincia )
+Economia$denominazione_provincia <- gsub("Massa-Carrara", 'Massa Carrara', Economia$denominazione_provincia )
+
+
+#Join dati dati codici Ateco e DPCM 22 Marzo 2020
+Economia$Ateco.2007 <- NULL
+Economia <- left_join(Economia,Ateco,by="D3")
+Economia<-Economia[!(Economia$D3==Economia$D2),] #elimino ridondanze gruppi Ateco
+Economia <- Economia[complete.cases(Economia), ]
+
+# Settori economici
+Settori_attivi_industria[Settori_attivi_industria == "*"] <- 0
+Settori_attivi_industria$`Numero Addetti` <- as.numeric(Settori_attivi_industria$`Numero Addetti`)
+Settori_attivi_industria <- Settori_attivi_industria %>% 
+  group_by(Denominazione_provincia) %>% 
+  summarise(attivi_industria = sum(`Numero Addetti`))
+
+settori_attivi_servizi[settori_attivi_servizi == "*"] <- 0
+settori_attivi_servizi$`Numero Addetti` <- as.numeric(settori_attivi_servizi$`Numero Addetti`)
+settori_attivi_servizi <- settori_attivi_servizi %>% 
+  group_by(Denominazione_provincia) %>% 
+  summarise(attivi_servizi = sum(`Numero Addetti`))
+
+settori_sospesi_industria[settori_sospesi_industria == "*"] <- 0
+settori_sospesi_industria$`Numero Addetti` <- as.numeric(settori_sospesi_industria$`Numero Addetti`)
+settori_sospesi_industria <- settori_sospesi_industria %>% 
+  group_by(Denominazione_provincia) %>% 
+  summarise(sospesi_industria = sum(`Numero Addetti`))
+
+settori_sospesi_servizi[settori_sospesi_servizi == "*"] <- 0
+settori_sospesi_servizi$`Numero Addetti` <- as.numeric(settori_sospesi_servizi$`Numero Addetti`)
+settori_sospesi_servizi <- settori_sospesi_servizi %>% 
+  group_by(Denominazione_provincia) %>% 
+  summarise(sospesi_servizi = sum(`Numero Addetti`))
+
+Settori <- left_join(Settori_attivi_industria,settori_attivi_servizi,by="Denominazione_provincia")
+Settori <- left_join(Settori,settori_sospesi_industria,by="Denominazione_provincia")
+Settori <- left_join(Settori,settori_sospesi_servizi,by="Denominazione_provincia")
+colnames(Settori)[which(names(Settori) == "Denominazione_provincia")] <- "denominazione_provincia"
+
+
+Settori$denominazione_provincia <- gsub("Valle d'Aosta/Vallée d'Aoste", 'Aosta', Settori$denominazione_provincia )
+Settori$denominazione_provincia <- gsub("Bolzano/Bozen", 'Bolzano', Settori$denominazione_provincia )
+Settori$denominazione_provincia <- gsub("Forlì Cesena", 'ForlÃ¬-Cesena', Settori$denominazione_provincia )
+Settori$denominazione_provincia <- gsub("Verbano Cusio Ossola", 'Verbano-Cusio-Ossola', Settori$denominazione_provincia )
+Settori$denominazione_provincia <- gsub("Sud Sardegna  ", "Sud Sardegna", Settori$denominazione_provincia )
+Settori$denominazione_provincia <- gsub("Barletta Andria Trani", "Barletta-Andria-Trani", Settori$denominazione_provincia )
+
+# Prepara matrice Mobilita' ############################################################
+Mobilita <- Mobilita %>% gather(Date, Value, X2020.01.13:names(Mobilita)[length(names(Mobilita))])
+Mobilita <- Mobilita[Mobilita[,1] == "country/region",] #geo_type sostituito
+Mobilita[,1] <- NULL #geo_type sostituito
+Mobilita$Date <- gsub("X2020", "2020", Mobilita$Date)
+Mobilita$Date <- gsub("\\.", "-", Mobilita$Date)
+Mobilita$Date <- as.Date(Mobilita$Date )
+#setdiff(paste0(Mobilita$region,"-"),CountryStateList$CountryState) # differenze tra le country
+Mobilita$region <- gsub("Czech Republic", "Czechia", Mobilita$region)
+Mobilita$region <- gsub("Republic of Korea", "Korea, South", Mobilita$region)
+Mobilita$region <- gsub("Taiwan", "Taiwan*", Mobilita$region)
+names(Mobilita)[names(Mobilita) == "region"] <- "Country_Region"
+
+# Prepara matrice LockDown ##########################################################
+names(LockDown)[names(LockDown) == "Country.Region"] <- "Country_Region"
+LockDown$Date <- as.Date(LockDown$Date, format = "%d/%m/%Y")
+LockDown <- LockDown[complete.cases(LockDown), ]
+
+# Preparazione Dati JHU ####################################################################
+train$Date <- as.Date(train$Date, format = "%Y-%m-%d")
+test$Date <- as.Date(test$Date, format = "%Y-%m-%d")
+#max(train$Date) - min(test$Date) # 6 days overlapping
+#train <- train[train$Date < min(test$Date),] # subset train
+# State-Province unique key
+train$CountryState <- paste0(train$Country_Region,"-",train$Province_State)
+train$CountryState <- as.factor(train$CountryState)
+test$CountryState <- paste0(test$Country_Region,"-",test$Province_State)
+test$CountryState <- as.factor(test$CountryState)
+# State-list
+CountryStateList <- unique(train["CountryState"])
+CountryStateList$RSMLEConfirmedCases <- 0
+CountryStateList$RSMLEFatalities <- 0
+
+trainPred <- data.frame(Id=integer(),
+                        Country_Region=character(), 
+                        Province_State=character(), 
+                        Date=as.Date(character()),
+                        ConfirmedCases=numeric(),
+                        Fatalities=numeric(),
+                        CountryState=factor(),
+                        days=numeric(),
+                        PredConfirmedCases=numeric(),
+                        PredFatalities=numeric(),
+                        stringsAsFactors=FALSE) 
+
+testPred <- data.frame(ForecastId=integer(),
+                       Country_Region=character(), 
+                       Province_State=character(), 
+                       Date=as.Date(character()),
+                       CountryState=factor(),
+                       days=numeric(),
+                       PredConfirmedCases=numeric(),
+                       PredFatalities=numeric(),
+                       stringsAsFactors=FALSE)
+
+wwcases$Date <- as.Date(wwcases$Date, format = "%Y-%m-%d")
+# State-Province unique key
+wwcases$CountryState <- paste0(wwcases$Country_Region,"-",wwcases$Province_State)
+wwcases$CountryState <- as.factor(wwcases$CountryState)
+
+```
+
+# 2 Diffusione del Virus
+## Valori Assoluti
+
+In questa sezione vengono esposti i dati in valore assoluto relativamente alla Regioni. I principali punti di attenzione rilevati sono:
+
+Lombardia, Emilia Romagna , Veneto e Piemonte sono le regioni con il maggior numero **totale di casi**.
+
+```{r totale, message=FALSE,warning=FALSE, echo=FALSE }
+# MAPPA TOTALE CASI 
+x <- ita$features[[1]]
+#x$properties
+dfita1 <- ProvinceToday
+dfita1$hasc <- paste0("IT.",dfita1$sigla_provincia)
+names(dfita1)[names(dfita1) == "denominazione_provincia"] <- "name"
+names(dfita1)[names(dfita1) == "totale_casi"] <- "Count"
+dfita2 <-  ita$features %>% 
+  map_df(function(x){ data_frame(hasc = x$properties$hasc, name = x$properties$name)})
+
+dfita <- left_join(dfita2,dfita1,by="hasc")
+rm(dfita1)
+rm(dfita2)
+
+highchart(type = "map") %>% 
+  hc_title(text = "Totale dei casi per Provincia") %>% 
+  hc_legend(enabled = TRUE, align = "right", verticalAlign = "middle",
+            layout = "vertical") %>% 
+  hc_mapNavigation(enabled = TRUE) %>%
+  hc_add_series_map(map = ita, df = dfita, joinBy = "hasc", value = "Count")
+
+```
+
+
+```{r assoluti1, echo=FALSE}
+#Positivi
+Regioni %>%
+  ggplot( aes(x=data, y=totale_positivi, group=denominazione_regione, color=denominazione_regione)) +
+  geom_line(size=1.5) +
+  ggtitle("Positivi") +
+  theme(axis.text.x = element_text(angle = 90))+
+  ylab("Numero di Persone") +
+  scale_colour_discrete(guide = 'none') +
+  scale_x_discrete(expand=c(0, 4)) +
+  geom_dl(aes(label = denominazione_regione), method = list(dl.combine( "last.points"), cex = 1)) 
+```
+
+Lombardia e Veneto hanno un numero di **Tamponi** molto maggiore rispetto alle altre regioni.
+
+```{r assoluti2, echo=FALSE}
+#Tamponi
+Regioni %>%
+  ggplot( aes(x=data, y=tamponi, group=denominazione_regione, color=denominazione_regione)) +
+  geom_line(size=1) +
+  ggtitle("Numero di Tamponi") +
+  theme(axis.text.x = element_text(angle = 90))+
+  ylab("Numero di Persone") +
+  scale_colour_discrete(guide = 'none') +
+  scale_x_discrete(expand=c(0, 4)) +
+  geom_dl(aes(label = denominazione_regione), method = list(dl.combine( "last.points"), cex = 1)) 
+```
+
+
+L'**isolamento domiciliare** e' alto in Lombardia, Veneto ed Emilia Romagna. Dal 19 Marzo  anche il Piemonte sta ricorrendo all'isolamento domiciliare piu' che in precedenza.
+
+```{r assoluti3, echo=FALSE}
+#isolamento domiciliare
+Regioni %>%
+  ggplot( aes(x=data, y=isolamento_domiciliare, group=denominazione_regione, color=denominazione_regione)) +
+  geom_line(size=1) +
+  ggtitle("Isolamento Domiciliare") +
+  theme(axis.text.x = element_text(angle = 90))+
+  ylab("Numero di Persone ") +
+  scale_colour_discrete(guide = 'none') +
+  scale_x_discrete(expand=c(0, 4)) +
+  geom_dl(aes(label = denominazione_regione), method = list(dl.combine( "last.points"), cex = 1)) 
+```
+
+Rispetto alle regioni piu' colpite, il Piemonte ha avuto un incremento dei **ricoverati con sintomi** che e' iniziato verso meta' marzo. Il Veneto ha un numero ricoverati con sintomi basso rispetto alle regioni piu' colpite.
+
+```{r assoluti4, echo=FALSE}
+#ricoverati con sintomi
+Regioni %>%
+  ggplot( aes(x=data, y=ricoverati_con_sintomi, group=denominazione_regione, color=denominazione_regione)) +
+  geom_line(size=1) +
+  ggtitle("ricoverati con sintomi") +
+  theme(axis.text.x = element_text(angle = 90))+
+  ylab("Numero di Persone ") +
+  scale_colour_discrete(guide = 'none') +
+  scale_x_discrete(expand=c(0, 4)) +
+  geom_dl(aes(label = denominazione_regione), method = list(dl.combine( "last.points"), cex = 1)) 
+```
+
+La Lombardia ha numero di persone in **terapia intensiva** circa 4 volte rispetto alle altre regioni. Verso il 10 Marzo vi e' stato un aumento deciso delle terapie intensive di Piemonte, Veneto, Emilia Romagna e Toscana.
+
+```{r assoluti5, echo=FALSE}
+#Terapia Intensiva
+Regioni %>%
+  ggplot( aes(x=data, y=terapia_intensiva, group=denominazione_regione, color=denominazione_regione)) +
+  geom_line(size=1) +
+  ggtitle("Terapia Intensiva") +
+  theme(axis.text.x = element_text(angle = 90))+
+  ylab("Numero di Persone ") +
+  scale_colour_discrete(guide = 'none') +
+  scale_x_discrete(expand=c(0, 4)) +
+  geom_dl(aes(label = denominazione_regione), method = list(dl.combine( "last.points"), cex = 1)) 
+```
+
+La Lombardia ha numero di **persone decedute** nettamente piu' elevato. 
+
+```{r assoluti6, echo=FALSE}
+#Deceduti
+Regioni %>%
+  ggplot( aes(x=data, y=deceduti, group=denominazione_regione, color=denominazione_regione)) +
+  geom_line(size=1.5) +
+  ggtitle("Deceduti") +
+  theme(axis.text.x = element_text(angle = 90))+
+  ylab("Numero di persone ") +
+  scale_colour_discrete(guide = 'none') +
+  scale_x_discrete(expand=c(0, 4)) +
+  geom_dl(aes(label = denominazione_regione), method = list(dl.combine("last.points"), cex = 1)) 
+```
+
+La curva dei **nuovi positivi** e' in fase di discesa ma con una pendeza meno ripida rispetto alla salita prospettando forse un decorso piu' lungo del previsto.
+
+```{r assoluti7, echo=FALSE}
+#nuovi positivi
+Regioni %>%
+  ggplot( aes(x=data, y=nuovi_positivi, group=denominazione_regione, color=denominazione_regione)) +
+  #  geom_line(size=1) +
+  # geom_smooth(method = "lm", formula = y ~ poly(x, 8), se = FALSE) +
+  geom_smooth(method = "loess", formula =y ~ x, se = FALSE) +
+  ggtitle("Nuovi Positivi (Smooth Loess)") +
+  theme(axis.text.x = element_text(angle = 90))+
+  ylab("Numero di persone ") +
+  scale_colour_discrete(guide = 'none') +
+  scale_x_discrete(expand=c(0, 4)) +
+  geom_dl(aes(label = denominazione_regione), method = list(dl.combine("last.points"), cex = 1)) 
+
+
+```
+
+P.A. di Bolzano e Liguria hanno una  **densita' di positivi per kilometro quadrato** relativamente alta rispetto alle regioni piu' colpite; bisogna tenere in considerazione che sono aree con densita' di popolazione simile al Veneto.  
+
+```{r assoluti8, echo=FALSE}
+#Densità positivi
+ggplot(RegioniToday,aes(x = denominazione_regione,y = positivi_per_densita)) + 
+  geom_bar(aes(fill = denominazione_regione),stat = "identity",position = "dodge") +
+  labs(x = "Regione",
+       y = "Numero positivi per km2",
+       title = "Positivi per km2") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+Il numero di **Tamponi** giornaliero e' naturalmente in continuo aumento e  con momenti di calo ricorrente a cui pare associato un relativo calo dei nuovi casi qualche giorno successivo.
+
+```{r Tamponi1, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+#esplorazione/confronto sovrapposto
+coeff <- 1
+TamponiColor <- "green4"
+NuoviCasiColor <- "orangered"
+df <- Nazionale
+df$giorni <- 1:nrow(df)
+for (i in 2:nrow(df)-1) {
+  df$delta_tamponi[i] <- df$tamponi[i+1] - df$tamponi[i]
+}
+
+ggplot(df, aes(x=giorni)) +
+  geom_line( aes(y=delta_tamponi), size=1, color=TamponiColor) + 
+  geom_line( aes(y=nuovi_positivi/coeff), size=1, color=NuoviCasiColor) +
+  scale_y_continuous(
+    name = "Tamponi",
+    sec.axis = sec_axis(~.*coeff, name="Nuovi Casi")
+  ) + 
+  theme(
+    axis.title.y = element_text(color = TamponiColor, size=13),
+    axis.title.y.right = element_text(color = NuoviCasiColor, size=13),
+    axis.text.x = element_text(angle = 90)
+  ) +
+  ggtitle("Confronto giornaliero Tamponi-Nuovi Casi")
+```
+
+Utilizzando il numero di casi testati si cerca di individuare il **numero di tamponi medio effettuato per ogni persona positiva** al covid. Ipotizzando che la negativita' di una persona sia definita con un solo tampone viene effettuato il seguente calcolo.
+
+* **negativi al primo tampone = casi testati - totale dei casi di covid**
+
+Persone negative al covid e con un solo tampone effettuato (Ipotizzando un tampone per esito negativo).
+
+* **num tamponi fatti ai positivi = totale tamponi - negativi al primo tampone**
+
+Persone positive al covid con almeno un tampone (positivi, dimessi e deceduti)
+
+* **num di tamponi per positivo = num tamponi fatti ai positivi / totale dei casi**
+
+Tutte le persone che hanno contratto il virus ed in teoria dovrebbero aver fatto piu' di un tampone.
+
+Quasi tutte le regioni sono sotto i **6 tamponi**, alcune regioni dagli 11 ai 16 tamponi.
+
+
+```{r Tamponi2, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+df <- Regioni
+df <- df[complete.cases(df), ]
+df$tamcasitest <- df$tamponi/df$casi_testati
+
+df$tamponi_per_casi_testati <- df$tamponi/df$casi_testati
+df$negativi_al_1tampone <- df$casi_testati - df$totale_casi 
+df$num_tamponi_ai_positivi <- df$tamponi - df$negativi_al_1tampone
+df$num_tamponi_per_positivo <- df$num_tamponi_ai_positivi/df$totale_casi
+df <- df[df$data > "2020-04-25",]
+
+df %>%
+  ggplot( aes(x=denominazione_regione, y=num_tamponi_per_positivo, fill=denominazione_regione)) +
+  geom_boxplot() +
+  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+  #geom_jitter(color="black", size=0.4, alpha=0.9) +
+  theme_ipsum() +
+  theme(
+    legend.position="none",
+    plot.title = element_text(size=11),
+    axis.text.x = element_text(angle = 90)
+  ) +
+  ylab("Tamponi per persona positiva") +
+  ggtitle("Numero di Tamponi per persona positiva") +
+  xlab("")
+```
+
+## Valori Percentuali
+
+In questa sezione vengono esposti dati in valore percentuale al fine di confrontare le situazioni regionali rispetto a popolazione e abitanti positivi. Le sequenze temporali dei dati hanno valori molto discontinui e quindi e' stata effettuata una interpolazione  (**smooth**) per rendere piu' comprensibile l'andamento. I principali punti di attenzione rilevati sono:
+
+* Valle d'Aosta e P.A. Trento hanno raggiunto la **percentuale di positivi** piu' alta.
+
+* Veneto, P.A: Bolzano e Trento hanno raggiunto la percentuale di **Tamponi** piu' alta.
+
+* Il Piemonte ha una percentuale di **isolamento domiciliare** che sino a meta' marzo era la piu' bassa con un numero di **ricoverati con sintomi** alto.
+
+
+**Percentuali rispetto alla popolazione regionale**
+ 
+```{r percentualiregione1, echo=FALSE}
+#Positivi su tutta la popolazione regionale
+Regioni %>%
+  ggplot( aes(x=data, y=per_positivi, group=denominazione_regione, color=denominazione_regione)) +
+#  geom_line(size=1.5) +
+  ggtitle("percentuale positivi su tutta la popolazione regionale") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())+
+  ylab("Percentuale") +
+  scale_colour_discrete(guide = 'none') +
+#  scale_x_discrete(expand=c(0, 4)) +
+#  geom_dl(aes(label = denominazione_regione), method = list(dl.combine("last.points"), cex = 1)) +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 10), se = FALSE) +
+  facet_wrap(~denominazione_regione, scale="free_y")
+```
+
+
+```{r percentualiregione2, echo=FALSE}
+#Tamponi su tutta la popolazione regionale
+Regioni %>%
+  ggplot( aes(x=data, y=per_tamponi, group=denominazione_regione, color=denominazione_regione)) +
+  geom_line(size=1.5) +
+  ggtitle("percentuale tamponi su tutta la popolazione regionale") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())+
+  ylab("Percentuale") +
+  scale_colour_discrete(guide = 'none') +
+#  scale_x_discrete(expand=c(0, 4)) +
+#  geom_dl(aes(label = denominazione_regione), method = list(dl.combine("last.points"), cex = 1)) 
+#  geom_smooth(method = "lm", formula = y ~ poly(x, 10), se = FALSE) +
+  facet_wrap(~denominazione_regione, scale="free_y") 
+```
+
+**Percentuali rispetto ai positivi**
+
+```{r percentualipositivi1, message=FALSE,warning=FALSE, echo=FALSE}
+#isolamento domiciliare rispetto ai positivi
+Regioni %>%
+  ggplot( aes(x=data, y=per_isolamento_domiciliare, group=denominazione_regione, color=denominazione_regione)) +
+#  geom_line(size=1.5) +
+  ggtitle("percentuale isolamento domiciliare rispetto ai positivi") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())+
+  ylab("Percentuale") +
+  scale_colour_discrete(guide = 'none') +
+#  scale_x_discrete(expand=c(0, 4)) +
+#  geom_dl(aes(label = denominazione_regione), method = list(dl.combine("last.points"), cex = 1)) +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 10), se = FALSE) +
+  facet_wrap(~denominazione_regione, scale="free_y") 
+```
+
+
+```{r percentualipositivi2, message=FALSE,warning=FALSE, echo=FALSE}
+#ricoverati_con_sintomi rispetto ai positivi
+Regioni %>%
+  ggplot( aes(x=data, y=per_ricoverati_con_sintomi, group=denominazione_regione, color=denominazione_regione)) +
+#  geom_line(size=1.5) +
+  ggtitle("percentuale ricoverati con sintomi rispetto ai positivi") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())+
+  ylab("Percentuale ") +
+  scale_colour_discrete(guide = 'none') +
+#  scale_x_discrete(expand=c(0, 4)) +
+#  geom_dl(aes(label = denominazione_regione), method = list(dl.combine("last.points"), cex = 1)) +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 10), se = FALSE) +
+  facet_wrap(~denominazione_regione, scale="free_y") 
+```
+
+
+```{r percentualipositivi3, message=FALSE,warning=FALSE, echo=FALSE}
+#Terapia Intensiva rispetto ai positivi
+Regioni %>%
+  ggplot( aes(x=data, y=per_terapia_intensiva, group=denominazione_regione, color=denominazione_regione)) +
+#  geom_line(size=1.5) +
+  ggtitle("percentuale Terapia Intensiva rispetto ai positivi") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())+
+  ylab("Percentuale")+
+  scale_colour_discrete(guide = 'none') +
+#  scale_x_discrete(expand=c(0, 4)) +
+#  geom_dl(aes(label = denominazione_regione), method = list(dl.combine("last.points"), cex = 1)) +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 10), se = FALSE) +
+  facet_wrap(~denominazione_regione, scale="free_y")
+```
+
+```{r decedutipositivi, message=FALSE,warning=FALSE, echo=FALSE}
+#Deceduti rispetto ai positivi
+Regioni %>%
+  ggplot( aes(x=data, y=per_deceduti, group=denominazione_regione, color=denominazione_regione)) +
+  #  geom_line(size=1.5) +
+  ggtitle("percentuale deceduti rispetto ai positivi") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())+
+  ylab("Percentuale")+
+  scale_colour_discrete(guide = 'none') +
+#  scale_x_discrete(expand=c(0, 4)) +
+  #  geom_dl(aes(label = denominazione_regione), method = list(dl.combine("last.points"), cex = 1)) +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 10), se = FALSE) +
+  facet_wrap(~denominazione_regione, scale="free_y") 
+```
+
+
+## Matrici di Correlazione
+
+In questa sezione viene effettuata uan analisi di correlazione tra i seguenti parametri:  *totale ricoverati con sintomi, isolamento domiciliare, totale attualmente positivi, nuovi attualmente positivi, tamponi*
+
+I coefficenti di correlazione risultano essere sempre elevati e positivi, interessanti sono le correlazioni tra i **tamponi** e le altre variabili. Nella matrice di correlazione a livello Italiano si notano chiaramente diverse direttrici di crescita nelle correlazioni,  l'effetto dovrebbe essere dovuto ai diversi approcci adottati ndalle singole regioni. 
+
+Le correlazioni "Tamponi-variazione totale positivi" hanno invece una distribuzione piu' sparsa in cui e' piu' difficile determinare qualche forma di correlazione. 
+
+In Piemonte abbiamo una seconda conferma dell'iniziale rapporto "atipico" tra Tamponi ed Isolamento Domicilare. 
+
+
+```{r Correlazione, message=FALSE,warning=FALSE, echo=FALSE}
+Pairvar <- c("denominazione_regione","ricoverati_con_sintomi", "isolamento_domiciliare", "totale_positivi", "variazione_totale_positivi", "tamponi")
+Pairdf <- Regioni[Pairvar]
+Pairdf$denominazione_regione <- NULL
+ggpairs(Pairdf,lower = list(continuous = wrap("smooth",color = "Green")), title = "Matrice Correlazione Italia")
+```
+
+
+```{r CorrelazioneRegioni, message=FALSE,warning=FALSE, echo=FALSE}
+Pairvar <- c("denominazione_regione","ricoverati_con_sintomi", "isolamento_domiciliare", "totale_positivi", "variazione_totale_positivi", "tamponi")
+Pairdf <- Regioni[Pairvar]
+Pairdf <- Pairdf[ which(Pairdf$denominazione_regione=='Lombardia'), ]
+Pairdf$denominazione_regione <- NULL
+ggpairs(Pairdf,lower = list(continuous = wrap("smooth",color = "Green")), title = "Matrice Correlazione Lombardia")
+
+Pairvar <- c("denominazione_regione","ricoverati_con_sintomi", "isolamento_domiciliare", "totale_positivi", "variazione_totale_positivi", "tamponi")
+Pairdf <- Regioni[Pairvar]
+Pairdf <- Pairdf[ which(Pairdf$denominazione_regione=='Piemonte'), ]
+Pairdf$denominazione_regione <- NULL
+ggpairs(Pairdf,lower = list(continuous = wrap("smooth",color = "Green")), title = "Matrice Correlazione Piemonte")
+
+```
+
+## Calcolo di Rt
+
+Il numero di riproduzione, R, e' il numero medio di casi secondari di malattia causati da un singolo individuo infetto durante il suo periodo infettivo. Questo indicatore statistico,  specifico per tempo e situazioni, e' comunemente usato per caratterizzare trasmissibilita' dei patogeni durante un'epidemia. Il monitoraggio di R nel tempo fornisce feedback sull'efficacia di interventi e sulla necessita' di intensificare gli sforzi di controllo, visto che l'obiettivo del controllo e' di ridurre R al di sotto del valore soglia di 1 ed il piu' vicino possibile a 0, riconducendo quindi un'epidemia sotto controllo.
+
+Di seguito i valori di Rt per le varie regioni italiane calcolati secondo il modello descritto da **Anne Cori&all** *[1]* e disponibile con il package R **EpiEstim** *[2]* 
+
+*[1] A New Framework and Software to Estimate Time-Varying Reproduction Numbers During Epidemics Anne Cori, Neil M. Ferguson, Christophe Fraser, and Simon Cauchemez American journal of epidemiology. 2013*
+
+*[2] Tools to quantify transmissibility throughout an epidemic from the analysis of time series of incidence as described in Cori et al. (2013) <doi:10.1093/aje/kwt133> and Wallinga and Teunis (2004) <doi:10.1093/aje/kwh255>*
+
+
+Al modello vengono fornite le curva epidemica ed il seguente Generation Time.
+
+```{r mGT, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+plotTD <- data.frame(denominazione_regione=factor(),
+                     Data=factor(), 
+                     R =numeric(),
+                     CIlower=numeric(),
+                     CIupper=numeric(),
+                     stringsAsFactors=FALSE)
+
+# Generation Time
+mGT <- generation.time("gamma", c(5,1.8))
+plot(mGT)
+```
+
+```{r estimate_R, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+ListaRegioni <- RegioniToday$denominazione_regione
+for (i in 1:length(ListaRegioni))
+{
+  Pairdf <- Regioni[Regioni$denominazione_regione==ListaRegioni[i],]
+  tointerpolate <- which(Pairdf$nuovi_positivi < 0)
+  Pairdf$nuovi_positivi[tointerpolate] <- Pairdf$nuovi_positivi[tointerpolate-1] +
+    (Pairdf$nuovi_positivi[tointerpolate+1]-
+       Pairdf$nuovi_positivi[tointerpolate-1])/2
+  Pairdf$nuovi_positivi <- round(Pairdf$nuovi_positivi, digits = 0)
+  
+  # Crea Serie
+  serieRegione <- Pairdf$nuovi_positivi
+  names(serieRegione) <- Pairdf$data
+  
+  # Matrice R(t)  
+  TD <- tryCatch(
+    { #Default config will estimate R on weekly sliding windows.
+      estimate_R(Pairdf$nuovi_positivi,
+                        method = "non_parametric_si",
+                        config = make_config(list(si_distr = mGT$GT)))
+    },
+    error = function(e) {}
+  )
+  
+  if (!is.null(TD) )
+  { 
+    denominazione_regione <- ListaRegioni[i]
+    Data <- TD$R$t_start
+    #Data <- Data[1:length(Data)-1]
+    R<- TD$R$`Mean(R)`
+    #R <- R[1:length(R)-1]
+    CIlower <- TD$R$`Quantile.0.05(R)`
+    #CIlower <- CIlower[1:length(CIlower)-1]
+    CIupper <-TD$R$`Quantile.0.95(R)`
+    #CIupper <- CIupper[1:length(CIupper)-1]
+    plotTMP <-  data.frame(denominazione_regione, Data , R, CIlower, CIupper)
+    plotTD <- rbind(plotTD, plotTMP)
+  }
+} # end for
+
+```
+
+**Situazione complessiva**
+
+Nei grafici vengono scartati i primi 15 gg della serie e l'inizio del calcolo degli indici e' circa meta' di Marzo.
+
+```{r Plot_R_totali, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+# scartati i primi 15 gg quindi inizia a cirva 1/2 marzo
+plotTD <- plotTD[plotTD$Data > 15,] 
+
+plotTD %>%
+  ggplot( aes(x=Data, y=R, group=denominazione_regione, color=denominazione_regione)) +
+  geom_line(size=1) +
+  #  theme(axis.text.x = element_text(angle = 90)) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())+
+  geom_ribbon(aes(ymin=CIlower,ymax=CIupper),alpha=0.3) +
+  geom_hline(yintercept = 1, color="green4", size=1, linetype=2) +
+  scale_colour_discrete(guide = 'none') +
+#  annotate(geom="text", x="2020-02-26", y=1.3, label="R=1",color="green4") +
+  facet_wrap(~denominazione_regione, scale="free_y") +
+  ggtitle("Time Dependant R(t)")
+```
+
+Di seguito una sintesi a **livello nazionale** anche se, vista la diversita' con cui si e' diffuso il virus nelle varie regioni, ha una rilevanaza minore rispetto ai valori di Rt locali.
+```{r Rtitalia, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+Pairdf <- Nazionale
+
+#interpola valori negativi
+tointerpolate <- which(Pairdf$nuovi_positivi < 0)
+Pairdf$nuovi_positivi[tointerpolate] <- Pairdf$nuovi_positivi[tointerpolate-1] +
+  (Pairdf$nuovi_positivi[tointerpolate+1]-
+     Pairdf$nuovi_positivi[tointerpolate-1])/2
+Pairdf$nuovi_positivi <- round(Pairdf$nuovi_positivi, digits = 0)
+
+# Crea Serie
+serieItalia <- Pairdf$nuovi_positivi
+names(serieItalia) <- Pairdf$data
+#check.incid(serieItalia)
+
+# Generation Time
+mGT <- generation.time("gamma", c(5,1.8))
+
+#Time-Dependant (TD)
+TD <- estimate.R(serieItalia, mGT, begin=1, end=70, methods="TD", nsim=100)
+
+Data <- names(TD$estimates$TD$R)
+R<- unname(TD$estimates$TD$R)
+CIlower <- TD$estimates$TD$conf.int$lower
+CIupper <-TD$estimates$TD$conf.int$upper
+plotTD <-  data.frame(Data , R, CIlower, CIupper)
+lastrow <- as.numeric(nrow(plotTD)-1)
+plotTDIta <- plotTD[1:lastrow,]
+plotTDIta %>%
+  ggplot( aes(x=Data, y=R, group = 1)) +
+  geom_line(size=1, color="red") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  geom_ribbon(aes(ymin=CIlower,ymax=CIupper),alpha=0.3) +
+  geom_hline(yintercept = 1, color="green4", size=1, linetype=2) +
+  ggtitle("Time Dependant R(t) Italia")
+
+
+```
+
+**Dettaglio di alcune Regioni**
+
+```{r Rtlombardia, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+Denominazione_Regione <- "Lombardia"
+Pairdf <- Regioni[Regioni$denominazione_regione==Denominazione_Regione,]
+
+#interpola valori negativi
+tointerpolate <- which(Pairdf$nuovi_positivi < 0)
+Pairdf$nuovi_positivi[tointerpolate] <- Pairdf$nuovi_positivi[tointerpolate-1] +
+                                       (Pairdf$nuovi_positivi[tointerpolate+1]-
+                                        Pairdf$nuovi_positivi[tointerpolate-1])/2
+Pairdf$nuovi_positivi <- round(Pairdf$nuovi_positivi, digits = 0)
+
+# crea serie
+serieRegione <- Pairdf$nuovi_positivi
+names(serieRegione) <- Pairdf$data
+#check.incid(serieRegione)
+
+# generation time
+mGT <- generation.time("gamma", c(5,1.8))
+
+#Time-Dependant (TD)
+TD <- estimate.R(serieRegione, mGT, begin=1, end=70, methods="TD", nsim=100)
+ML <- estimate.R(serieRegione, mGT, begin=1, end=67, methods="ML", nsim=100)
+
+Data <- names(TD$estimates$TD$R)
+R<- unname(TD$estimates$TD$R)
+CIlower <- TD$estimates$TD$conf.int$lower
+CIupper <-TD$estimates$TD$conf.int$upper
+plotTD <-  data.frame(Denominazione_Regione, Data , R, CIlower, CIupper)
+lastrow <- as.numeric(nrow(plotTD)-1)
+plotTDRegion <- plotTD[1:lastrow,]
+plotTDRegion %>%
+  ggplot( aes(x=Data, y=R, group = 1)) +
+  geom_line(size=1, color="aquamarine3") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  geom_ribbon(aes(ymin=CIlower,ymax=CIupper),alpha=0.3) +
+  geom_hline(yintercept = 1, color="green4", size=1, linetype=2) +
+  ggtitle(paste0("Time Dependant R(t) ",Denominazione_Regione))
+
+```
+
+```{r Rtpiemonte, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+Denominazione_Regione <- "Piemonte"
+Pairdf <- Regioni[Regioni$denominazione_regione==Denominazione_Regione,]
+
+#interpola valori negativi
+tointerpolate <- which(Pairdf$nuovi_positivi < 0)
+Pairdf$nuovi_positivi[tointerpolate] <- Pairdf$nuovi_positivi[tointerpolate-1] +
+                                       (Pairdf$nuovi_positivi[tointerpolate+1]-
+                                        Pairdf$nuovi_positivi[tointerpolate-1])/2
+Pairdf$nuovi_positivi <- round(Pairdf$nuovi_positivi, digits = 0)
+
+# crea serie
+serieRegione <- Pairdf$nuovi_positivi
+names(serieRegione) <- Pairdf$data
+#check.incid(serieRegione)
+
+# generation time
+mGT <- generation.time("gamma", c(5,1.8))
+
+#Time-Dependant (TD)
+TD <- estimate.R(serieRegione, mGT, begin=1, end=70, methods="TD", nsim=100)
+ML <- estimate.R(serieRegione, mGT, begin=1, end=67, methods="ML", nsim=100)
+
+Data <- names(TD$estimates$TD$R)
+R<- unname(TD$estimates$TD$R)
+CIlower <- TD$estimates$TD$conf.int$lower
+CIupper <-TD$estimates$TD$conf.int$upper
+plotTD <-  data.frame(Denominazione_Regione, Data , R, CIlower, CIupper)
+lastrow <- as.numeric(nrow(plotTD)-1)
+plotTDRegion <- plotTD[1:lastrow,]
+plotTDRegion %>%
+  ggplot( aes(x=Data, y=R, group = 1)) +
+  geom_line(size=1, color="deepskyblue") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  geom_ribbon(aes(ymin=CIlower,ymax=CIupper),alpha=0.3) +
+  geom_hline(yintercept = 1, color="green4", size=1, linetype=2) +
+  ggtitle(paste0("Time Dependant R(t) ",Denominazione_Regione))
+
+```
+
+```{r Rtemiliaromagna, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+Denominazione_Regione <- "Emilia-Romagna"
+Pairdf <- Regioni[Regioni$denominazione_regione==Denominazione_Regione,]
+
+#interpola valori negativi
+tointerpolate <- which(Pairdf$nuovi_positivi < 0)
+Pairdf$nuovi_positivi[tointerpolate] <- Pairdf$nuovi_positivi[tointerpolate-1] +
+                                       (Pairdf$nuovi_positivi[tointerpolate+1]-
+                                        Pairdf$nuovi_positivi[tointerpolate-1])/2
+Pairdf$nuovi_positivi <- round(Pairdf$nuovi_positivi, digits = 0)
+
+# crea serie
+serieRegione <- Pairdf$nuovi_positivi
+names(serieRegione) <- Pairdf$data
+#check.incid(serieRegione)
+
+# generation time
+mGT <- generation.time("gamma", c(5,1.8))
+
+#Time-Dependant (TD)
+TD <- estimate.R(serieRegione, mGT, begin=1, end=70, methods="TD", nsim=100)
+ML <- estimate.R(serieRegione, mGT, begin=1, end=67, methods="ML", nsim=100)
+
+Data <- names(TD$estimates$TD$R)
+R<- unname(TD$estimates$TD$R)
+CIlower <- TD$estimates$TD$conf.int$lower
+CIupper <-TD$estimates$TD$conf.int$upper
+plotTD <-  data.frame(Denominazione_Regione, Data , R, CIlower, CIupper)
+lastrow <- as.numeric(nrow(plotTD)-1)
+plotTDRegion <- plotTD[1:lastrow,]
+plotTDRegion %>%
+  ggplot( aes(x=Data, y=R, group = 1)) +
+  geom_line(size=1, color="chocolate") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  geom_ribbon(aes(ymin=CIlower,ymax=CIupper),alpha=0.3) +
+  geom_hline(yintercept = 1, color="green4", size=1, linetype=2) +
+  ggtitle(paste0("Time Dependant R(t) ",Denominazione_Regione))
+```
+
+
+
+# 3 Assistenza Sanitaria
+
+I dati della protezione civile sulla diffusione del contagio forniscono una prima idea di quanto il nostro sistema sanitario sia sotto pressione, in questa sezione proviamo ad approfondire alcuni aspetti come la popolazione a rischio ed una stima del carico su SSN.
+
+## Popolazione a rischio
+
+L'obiettivo di questa sezione e' determinare quale e' il **potenziale bacino di popolazione maggiormente a rischio nelle varie regioni** tenuto conto:  
+
+* dei dati ISTAT relativi alle **patologie piu' comuni** in italia nel **2018**. 
+
+* del bollettino settimanale riguardante le **caratteristiche delle persone decedute** fornito dall'Istituto superiore di Sanita' (dati tabella Patologie preesistenti osservate piu' frequentemente).
+
+E' stato possibile confrontare questi due dataset su un numero minore di patologie rispetto a quelle definite dall'Istituto superiore di Sanita' in quanto non vi e' lo stesso dettaglio delle patologie  presenti nel dataset ISTAT. Il confronto e' stato dunque eseguito su queste patologie: **Ipertensione arteriosa, Cardiopatia ischemica, Fibrillazione atriale, Scompenso cardiaco, Diabete mellito-Tipo 2, Broncopneumopatia cronica ostruttiva**
+
+
+<center>
+
+![](TabellaPercentualeDecessiCovidSSN.jpg)
+<br>*Fig: ISS Patologie preesistenti osservate piu' frequentemente (30 marzo)*<br>
+</center>
+<br>
+<br>
+
+
+Il calcolo effettuato riporta le percentuali delle patologie delle persone decedute rispetto ai dati delle persone con quelle patologie a livello regionale. In questo modo si da una visione numerica qualitativa del bacino di popolazione potenzialmente a rischio per ogni regione. Probabilmente dovrebbe essere considerato un bacino di persone su cui andrebbero effettuati controlli (per esempio tamponi). 
+
+Il grafico mostra come l'**ipertensione arteriosa** sia di gran lunga il fattore di maggiore rischio e come varia da regione a regione. Il **diabete tipo II** e' il secondo fattore di rischio ma e' piu' costante nelle varie regioni.
+
+Le persone **con piu' di una patologia** sono ovviamente **maggiormente a rischio** ma sono escluse dall'istogramma in quanto gia' comprese nei valori rappresentati.
+
+```{r Popolazionearischio, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+#Persone a rischio
+ggplot(Malattie,aes(x = denominazione_regione,y = persone_a_rischio)) + 
+  geom_bar(aes(fill = patologie_decesso_covid),stat = "identity") +
+  labs(x = "Regione",
+       y = "Numero persone a rischio",
+       title = "Persone a rischio per Regione") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+**Confronto patologie pre-esistenti nei decessi covid con diffusione delle patologie nelle Regioni**
+
+Di seguito il dettaglio che confronta, per alcune regioni, le percentuali di patologie della popolazione e le percentuali di patologie riscontrate nei decessi di pazienti Covid. Le regioni elencate (Lombardia, Veneto, Piemonte, Emilia Romagna) hanno tutte l'**ipertensione** come patologia piu' diffusa, la seconda patologia e' una **patologia polmonare** mentre i dati sui decessi evidenziano una incidenza maggiore del **diabete di tipo II** e delle **cardiopatie ischemiche**.
+
+```{r Confrontoregionipatologie, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+#confronto percentuali patologie deceduti - patologie 
+Malattie <- left_join(Malattie,Popolazione,by="denominazione_regione")
+Malattie$percentuale_persone_con_malattie <- 100*Malattie$persone_con_malattie/Malattie$totale
+Malattie$percentuale_persone_con_malattie <-round(Malattie$percentuale_persone_con_malattie, digits = 1)
+
+myvars <- c("denominazione_regione", "totale", "persone_con_malattie", "Patologie","percentuale_cause_decesso_covid", "patologie_decesso_covid")
+MalattieSintesi <- Malattie[myvars]
+MalattieSintesi$percentuale_persone_con_malattie <- 100*MalattieSintesi$persone_con_malattie/MalattieSintesi$totale
+MalattieSintesi$percentuale_persone_con_malattie <-round(MalattieSintesi$percentuale_persone_con_malattie, digits = 1)
+
+PercentualeDecessiCovidRegione <- PercentualeDecessiCovid
+PercentualeDecessiCovidRegione <-PercentualeDecessiCovidRegione[!(PercentualeDecessiCovidRegione$patologie_decesso_covid=="Ictus"),]
+PercentualeDecessiCovidRegione <-PercentualeDecessiCovidRegione[!(PercentualeDecessiCovidRegione$patologie_decesso_covid=="Demenza"),]
+PercentualeDecessiCovidRegione <-PercentualeDecessiCovidRegione[!(PercentualeDecessiCovidRegione$patologie_decesso_covid=="Cancro attivo negli ultimi 5 anni"),]
+PercentualeDecessiCovidRegione <-PercentualeDecessiCovidRegione[!(PercentualeDecessiCovidRegione$patologie_decesso_covid=="Epatopatia cronica"),]
+PercentualeDecessiCovidRegione <-PercentualeDecessiCovidRegione[!(PercentualeDecessiCovidRegione$patologie_decesso_covid=="nessuna patologia"),]
+PercentualeDecessiCovidRegione <-PercentualeDecessiCovidRegione[!(PercentualeDecessiCovidRegione$patologie_decesso_covid=="1 patologia"),]
+PercentualeDecessiCovidRegione <-PercentualeDecessiCovidRegione[!(PercentualeDecessiCovidRegione$patologie_decesso_covid=="2 patologie"),]
+PercentualeDecessiCovidRegione <-PercentualeDecessiCovidRegione[!(PercentualeDecessiCovidRegione$patologie_decesso_covid==" piu patologie"),]
+PercentualeDecessiCovidRegione <-PercentualeDecessiCovidRegione[!(PercentualeDecessiCovidRegione$patologie_decesso_covid==" Insufficienza renale cronica"),]
+
+#plot
+MalattieSintesiRegione <- MalattieSintesi[(MalattieSintesi$denominazione_regione == "Lombardia"),]
+myvars <- c("patologie_decesso_covid", "percentuale_persone_con_malattie")
+df1 <- MalattieSintesiRegione[myvars]
+myvars <- c("patologie_decesso_covid", "percentuale_cause_decesso_covid")
+df2 <- PercentualeDecessiCovidRegione[myvars]
+df <- left_join(df1,df2,by="patologie_decesso_covid") 
+p1 <- ggplot(df) + 
+  geom_col(aes(x = patologie_decesso_covid, y = percentuale_cause_decesso_covid), size = 1, color = "black", fill = "palegreen3") +
+  geom_col(aes(x = patologie_decesso_covid, y = percentuale_persone_con_malattie), size = 1 , color="black", fill = "red", group = 1) +
+  scale_y_continuous(
+    name = "% deceduti Covid (nazionale)",
+    sec.axis = sec_axis(~.*1, name="% patologie regioni")
+  ) + 
+  theme(
+    axis.title.y = element_text(color = "green4", size=13),
+    axis.title.y.right = element_text(color = "orangered", size=13),
+    axis.text.x = element_text(angle = 90)
+  ) +
+  ggtitle("Lombardia")
+
+MalattieSintesiRegione <- MalattieSintesi[(MalattieSintesi$denominazione_regione == "Piemonte"),]
+myvars <- c("patologie_decesso_covid", "percentuale_persone_con_malattie")
+df1 <- MalattieSintesiRegione[myvars]
+myvars <- c("patologie_decesso_covid", "percentuale_cause_decesso_covid")
+df2 <- PercentualeDecessiCovidRegione[myvars]
+df <- left_join(df1,df2,by="patologie_decesso_covid") 
+p2 <- ggplot(df) + 
+  geom_col(aes(x = patologie_decesso_covid, y = percentuale_cause_decesso_covid), size = 1, color = "black", fill = "palegreen3") +
+  geom_col(aes(x = patologie_decesso_covid, y = percentuale_persone_con_malattie), size = 1 , color="black", fill = "red", group = 1) +
+  scale_y_continuous(
+    name = "% deceduti Covid (nazionale)",
+    sec.axis = sec_axis(~.*1, name="% patologie regioni")
+  ) + 
+  theme(
+    axis.title.y = element_text(color = "green4", size=13),
+    axis.title.y.right = element_text(color = "orangered", size=13),
+    axis.text.x = element_text(angle = 90)
+  ) +
+  ggtitle("Piemonte")
+
+MalattieSintesiRegione <- MalattieSintesi[(MalattieSintesi$denominazione_regione == "Emilia-Romagna"),]
+myvars <- c("patologie_decesso_covid", "percentuale_persone_con_malattie")
+df1 <- MalattieSintesiRegione[myvars]
+myvars <- c("patologie_decesso_covid", "percentuale_cause_decesso_covid")
+df2 <- PercentualeDecessiCovidRegione[myvars]
+df <- left_join(df1,df2,by="patologie_decesso_covid") 
+p3 <- ggplot(df) + 
+  geom_col(aes(x = patologie_decesso_covid, y = percentuale_cause_decesso_covid), size = 1, color = "black", fill = "palegreen3") +
+  geom_col(aes(x = patologie_decesso_covid, y = percentuale_persone_con_malattie), size = 1 , color="black", fill = "red", group = 1) +
+  scale_y_continuous(
+    name = "% deceduti Covid (nazionale)",
+    sec.axis = sec_axis(~.*1, name="% patologie regioni")
+  ) + 
+  theme(
+    axis.title.y = element_text(color = "green4", size=13),
+    axis.title.y.right = element_text(color = "orangered", size=13),
+    axis.text.x = element_text(angle = 90)
+  ) +
+  ggtitle("Emilia-Romagna")
+
+MalattieSintesiRegione <- MalattieSintesi[(MalattieSintesi$denominazione_regione == "Veneto"),]
+myvars <- c("patologie_decesso_covid", "percentuale_persone_con_malattie")
+df1 <- MalattieSintesiRegione[myvars]
+myvars <- c("patologie_decesso_covid", "percentuale_cause_decesso_covid")
+df2 <- PercentualeDecessiCovidRegione[myvars]
+df <- left_join(df1,df2,by="patologie_decesso_covid") 
+p4 <- ggplot(df) + 
+  geom_col(aes(x = patologie_decesso_covid, y = percentuale_cause_decesso_covid), size = 1, color = "black", fill = "palegreen3") +
+  geom_col(aes(x = patologie_decesso_covid, y = percentuale_persone_con_malattie), size = 1 , color="black", fill = "red", group = 1) +
+  scale_y_continuous(
+    name = "% deceduti Covid (nazionale)",
+    sec.axis = sec_axis(~.*1, name="% patologie regioni")
+  ) + 
+  theme(
+    axis.title.y = element_text(color = "green4", size=13),
+    axis.title.y.right = element_text(color = "orangered", size=13),
+    axis.text.x = element_text(angle = 90)
+  ) +
+  ggtitle("Veneto")
+
+grid.arrange(p1, p2, ncol=2)
+grid.arrange(p3, p4, ncol=2)
+
+#grid.arrange(p1, p2, p3, p4, ncol=2)
+```
+
+## Carico sul SSN
+
+L'obiettivo di questa sezione e' determinare quale e' una ipotesi di **indice di carico sul SSN** tenuto conto del rapporto tra:  
+
+* somma del numero di persone nelle varie fasi in cui vengono a contatto con il SSN in maniera pesata a seconda dell'impegno nelle cure: isolamento_domiciliare, ricoverati_con_sintomi, terapia_intensiva, deceduti". A questi vengono sottratti il numero di dimessi_guariti. *(i pesi sono attribuiti arbitrariamente e migliorabili)*. 
+
+* dati ISTAT relativi al **peronale medico** in italia nel **2017** (medici specialistici, medici di base e personale infermieristico). 
+
+Gli indici calcolati riferendosi a personale 2017 non tengono in conto le **nuove assunzioni**, sono quindi indici probabilmente piu' pessimistici della reale situazione odierna.
+
+Oltre alla **Lombardia** la regioni con piu' carico sul SSN risulta essere il **Piemonte**. I dati della **Valle d'Aosta** sembrano essere errati. Alle curve e' stato applicato uno smooth
+
+```{r SSN, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+myvars <- c("data", "denominazione_regione", 
+            "isolamento_domiciliare",
+            "ricoverati_con_sintomi", 
+            "terapia_intensiva",
+            "deceduti",
+            "dimessi_guariti",   
+            "nuovi_positivi","tamponi")
+RegioniIndice <- Regioni[myvars]
+RegioniIndice <- left_join(RegioniIndice,PersonaleMedico,by="denominazione_regione")
+
+#carico sul SSN
+RegioniIndice$CaricoSSN <- (RegioniIndice$nuovi_positivi * 1 +
+                        RegioniIndice$isolamento_domiciliare * 2 +
+                        RegioniIndice$ricoverati_con_sintomi * 4 +
+                        RegioniIndice$terapia_intensiva * 6 +
+                        RegioniIndice$deceduti * 1)
+RegioniIndice$IndiceSSN <- RegioniIndice$CaricoSSN/RegioniIndice$numero_personale_medico
+
+RegioniIndice %>%
+  ggplot( aes(x=data, y=IndiceSSN, group=denominazione_regione, color=denominazione_regione)) +
+#  geom_line(size=1.5) +
+  ggtitle("indice di carico sul SSN (Smooth 10)") +
+  theme(axis.text.x = element_text(angle = 90))+
+  ylab("Valore indice") +
+  scale_colour_discrete(guide = 'none') +
+  scale_x_discrete(expand=c(0, 4)) +
+  geom_dl(aes(label = denominazione_regione), method = list(dl.combine("last.points"), cex = 1)) +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 10), se = FALSE)
+```
+
+
+# 4 Mercato del Lavoro
+
+In questa sezione viene visualizzata la percentuale di addetti sospesi dal lavoro a livello **provinciale** a fronte del **DPCM del 22 Marzo** e delle relative categorie economiche dell'allegato 1. 
+
+## Industria e Servizi
+
+In questa prima parte viene evidenziata la **percentuale di sospensione totale** dal lavoro e quelle parziali su **industria** e **servizi**.
+
+```{r Eco0, message=FALSE,warning=FALSE, echo=FALSE }
+Settori$totali_industria <- Settori$attivi_industria + Settori$sospesi_industria
+Settori$totali_servizi <- Settori$attivi_servizi + Settori$sospesi_servizi
+Settori$totali_attivi <- Settori$attivi_industria + Settori$attivi_servizi
+Settori$totali_sospesi <- Settori$sospesi_industria + Settori$sospesi_servizi
+Settori$totali <- Settori$totali_industria + Settori$totali_servizi 
+Settori$perc_sospesi <- round(Settori$totali_sospesi*100/Settori$totali, digits = 2)
+Settori$perc_sospesi_industria <- round(Settori$sospesi_industria*100/Settori$totali_industria, digits = 2)
+Settori$perc_sospesi_servizi <- round(Settori$sospesi_servizi*100/Settori$totali_servizi, digits = 2)
+
+PlotSettori <- function (inputsettore) {
+x <- ita$features[[1]]
+#x$properties
+dfita1 <- Settori
+dfita1 <- left_join(dfita1,ProvinceToday,by="denominazione_provincia")
+dfita1$hasc <- paste0("IT.",dfita1$sigla_provincia)
+names(dfita1)[names(dfita1) == "denominazione_provincia"] <- "name"
+names(dfita1)[names(dfita1) == inputsettore] <- "Count"
+dfita2 <-  ita$features %>% 
+  map_df(function(x){ data_frame(hasc = x$properties$hasc, name = x$properties$name)})
+
+dfita <- left_join(dfita2,dfita1,by="hasc")
+rm(dfita1)
+rm(dfita2)
+
+labelplot <- paste0("Mappa ",inputsettore, " dopo DPCM 22/03" )
+highchart(type = "map") %>% 
+  hc_title(text = labelplot, style = list(fontSize = "15px")) %>% 
+  hc_legend(enabled = TRUE, align = "right", verticalAlign = "middle",
+            layout = "vertical") %>% 
+  hc_mapNavigation(enabled = TRUE) %>%
+  hc_add_series_map(map = ita, df = dfita, joinBy = "hasc", value = "Count") %>%
+  hc_colorAxis(minColor = "palegreen", maxColor = "red")
+}
+```
+
+**Percentuale Sospensione dal lavoro (Industria+Servizi)**
+```{r Eco1, message=FALSE,warning=FALSE, echo=FALSE }
+PlotSettori("perc_sospesi")
+```
+
+**Percentuale Sospensione dal lavoro (parziali)**
+```{r Eco2, include = T, echo = FALSE}
+h1 <- PlotSettori("perc_sospesi_industria")
+h2 <- PlotSettori("perc_sospesi_servizi")
+hw_grid(h1, h2)
+```
+
+
+## Dettaglio Categorie Ateco
+
+In questa seconda parte vengono evidenziate **in valore assoluto** le **macro categorie** produttive dopo il DPCM del 22 Marzo.  
+
+Il DPCM sospende completamente alcune categorie lavorative ed alcune in modo parziale facendo riferimento ai relativi codici numerici Ateco. Nel visualizzare i dati si e' scelto di considerare approssimativamente meta' del numero di lavoratori relativamente a quelle categorie che sono parzialmente sospese dal decreto. A tal proposito ricordiamo:
+
+* **macro categorie non sospese**: fornitura di energia elettrica, gas, vapore e aria condizionata; servizi di informazione e comunicazione; trasporto e magazzinaggio; sanita' e assistenza sociale,	istruzione.
+
+* **macro categorie sospese**: attivita' immobiliari; attivita' artistiche, sportive, di intrattenimento e divertimento. 
+
+I diagrammi seguenti mostrano solo i lavoratori sospesi delle macro categorie **parzialmente sospese** in quanto le categorie completamente sospese sarebbero visualizzate come mappe uniformi con il valore totale degli addetti per quella categoria, oppure, uniformemente a zero per le categorie non sospese. 
+
+Dal calcolo sono ecluse le categorie relative all'**agricoltura** in quanto non presenti come dato nel report ISTAT.
+
+
+```{r Ateco1, message=FALSE,warning=FALSE, echo=FALSE }
+Economia$ValuePostDPCM <- Economia$Value*Economia$DPCM22032020
+Economia$ValuePostDPCM <- round(Economia$ValuePostDPCM, digits = 0)
+
+EconomiaSummary <- Economia %>% 
+  group_by(denominazione_provincia,D2, Ateco.Gruppo) %>% 
+  summarise(TotPreDPCM = sum(Value),
+            TotPostDPCM = sum(ValuePostDPCM))
+
+EconomiaSummary$diff <- EconomiaSummary$TotPreDPCM - EconomiaSummary$TotPostDPCM
+#unique(EconomiaSummary$Ateco.Gruppo[EconomiaSummary$diff==0]) # gruppi Ateco invariati
+EconomiaSummary$PercSospesi <- EconomiaSummary$diff * 100/EconomiaSummary$TotPreDPCM
+EconomiaSummary$PercSospesi <- round(EconomiaSummary$PercSospesi, digits = 2)
+
+PlotGruppo <- function (inputGruppo) {
+  x <- ita$features[[1]]
+  dfita1 <- EconomiaSummary[EconomiaSummary$D2==inputGruppo,]
+  dfita1 <- left_join(dfita1,ProvinceToday,by="denominazione_provincia")
+  dfita1$hasc <- paste0("IT.",dfita1$sigla_provincia)
+  names(dfita1)[names(dfita1) == "denominazione_provincia"] <- "name"
+  names(dfita1)[names(dfita1) == "diff"] <- "Count"
+  dfita2 <-  ita$features %>% 
+    map_df(function(x){ data_frame(hasc = x$properties$hasc, name = x$properties$name)})
+  
+  dfita <- left_join(dfita2,dfita1,by="hasc")
+  rm(dfita1)
+  rm(dfita2)
+  
+  labelgruppo <- unique(Ateco[Ateco$D2==inputGruppo,2])
+  labelplot <- paste0("Num. sospesi in ",labelgruppo  )
+  highchart(type = "map") %>% 
+    hc_title(text = labelplot, style = list(fontSize = "15px")) %>% 
+    hc_legend(enabled = TRUE, align = "right", verticalAlign = "middle",
+              layout = "vertical") %>% 
+    hc_mapNavigation(enabled = TRUE) %>%
+    hc_add_series_map(map = ita, df = dfita, joinBy = "hasc", value = "Count") %>%
+    hc_colorAxis(minColor = "palegreen", maxColor = "red")
+}
+```
+
+```{r Ecogroup1, include = T, echo = FALSE}
+h1 <- PlotGruppo("C")
+h2 <- PlotGruppo("E")
+hw_grid(h1, h2)
+```
+
+```{r Ecogroup2, include = T, echo = FALSE}
+h1 <- PlotGruppo("F")
+h2 <- PlotGruppo("G")
+hw_grid(h1, h2)
+```
+
+```{r Ecogroup3, include = T, echo = FALSE}
+h1 <- PlotGruppo("I")
+h2 <- PlotGruppo("M")
+hw_grid(h1, h2)
+```
+
+```{r Ecogroup4, include = T, echo = FALSE}
+h1 <- PlotGruppo("N")
+h2 <- PlotGruppo("S")
+hw_grid(h1, h2)
+```
+
+# 5 Trasporti e Mobilita'
+
+## Matrici Origine-Destinazione
+
+In questa sezione si cerca di dare una visione di come e' cambiata la mobilita' ma soprattutto di come i **lockdown** possano contribuire **diminuire la diffusione del contragio** tra le province italiane.
+
+I dati ISTAT di **matrice origine-destinazione** degli spostamenti per motivi di lavoro o di studio si riferiscono alla popolazione residente nel **2011**.
+
+I files contengono  dati sul numero di persone che si spostano tra comuni (o all'interno dello stesso comune) classificate per: motivo dello spostamento, mezzo di trasporto, fascia oraria di partenza e la durata del tragitto. 
+
+La base di calcolo sono **28.871.447 persone** che hanno dichiarato di recarsi giornalmente al luogo abituale di **studio** o di **lavoro**, partendo dalla propria residenza.
+
+Per rendere leggibile la rete della mobilita' si e' effettuato un **taglio** delle direttrici origine-destinazione **sotto i 1000 spostamenti** e sono inoltre stati eliminati gli spostameti all'interno della stessa provincia. Nella rete **N** e' il numero di spostamenti giornalieri. Queste semplificazioni hanno l'obiettivo di valutare la rete di propoagazione del contagio tra le varie province.
+
+Come prevedibile il grafo conferma sostanzialmente il legame tra le necessita' di trasporto e le aree di maggior diffusione del Virus. Nel grafo si nota il "cluster" **Centro-Nord** (che arriva sino a Pescara-Chieti) e quello **Centro-Sud** (che va da Pisa a Salerno). Chiaramente sono mappe di "pendolarismo" ma diventano anche linee di diffusione del contagio.
+
+
+```{r MatriciOD, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+# CREAZIONE MATRICI OD
+MatriceOD$Sesso <- NULL
+MatriceOD$Tipo_record <- NULL
+MatriceOD$Tipo_residenza <- NULL
+MatriceOD$Motivo_dello_spostamento <- NULL
+MatriceOD$Luogo_di_studio_o_di_lavoro <- NULL
+MatriceOD$boh <- NULL
+MatriceOD$Stato_estero_di_studio_o_di_lavoro <- NULL
+MatriceOD <- MatriceOD[complete.cases(MatriceOD), ]
+# concentro sulle province
+MatriceOD$Comune_di_residenza <- NULL
+MatriceOD$Comune_abituale_di_studio_o_di_lavoro <- NULL
+MatriceOD$Transizione <- paste(MatriceOD$Provincia_di_residenza, "-", MatriceOD$Provincia_abituale_di_studio_o_di_lavoro)
+
+MatriceODTotali <- MatriceOD %>%
+                   group_by(Provincia_di_residenza,Provincia_abituale_di_studio_o_di_lavoro) %>%
+                   summarize(n())
+myvars <- c("codice_provincia", "denominazione_provincia")
+ProvinceToday <- ProvinceToday[myvars]
+
+MatriceODTotali <- left_join(MatriceODTotali,ProvinceToday,by=c("Provincia_di_residenza" = "codice_provincia"))
+MatriceODTotali <- MatriceODTotali %>% 
+  rename(
+    denominazione_provincia_di_residenza = denominazione_provincia
+  )
+
+MatriceODTotali <- left_join(MatriceODTotali,ProvinceToday,by=c("Provincia_abituale_di_studio_o_di_lavoro" = "codice_provincia"))
+MatriceODTotali <- MatriceODTotali %>% 
+  rename(
+    denominazione_provincia_di_studio_o_di_lavoro = denominazione_provincia
+  )
+```
+
+```{r VisualizzazioneIgraph100, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+# RETE IGRAPH
+# RETE statica IGRAPH
+# https://www.jessesadler.com/post/network-analysis-with-r/
+MatriceODTotaliPivot <- pivot_wider(MatriceODTotali, names_from = denominazione_provincia_di_studio_o_di_lavoro, values_from = `n()`)
+MatriceODTotaliPivot$Provincia_di_residenza <- NULL
+MatriceODTotaliPivot$Provincia_abituale_di_studio_o_di_lavoro <- NULL
+MatriceODTotaliPivot$'NA' <- NULL
+MatriceODTotaliPivot[is.na(MatriceODTotaliPivot)] <- 0
+MatriceODTotaliPivot <- MatriceODTotaliPivot %>%
+  group_by(denominazione_provincia_di_residenza) %>%
+  summarize(n())
+MatriceODTotali$Provincia_di_residenza <- NULL
+MatriceODTotali$Provincia_abituale_di_studio_o_di_lavoro <- NULL
+MatriceODTotali$N <-  MatriceODTotali$`n()`
+MatriceODTotali$`n()` <- NULL
+
+#Completo
+MatriceODTotaliSub <-MatriceODTotali[MatriceODTotali$N > 1000,]
+MatriceODTotaliSub <- MatriceODTotaliSub[complete.cases(MatriceODTotaliSub), ]
+
+cor.graph <- as_tbl_graph(MatriceODTotaliSub, directed = FALSE)
+ggraph(cor.graph) + 
+  geom_edge_link(aes(width = N), alpha = 0.2) + 
+  geom_node_point(size = 2, colour = 'steelblue') +
+  geom_node_text(aes(label = name), size = 3, repel = TRUE
+  ) +
+  theme_graph()
+```
+
+**Versione della mappa Interattiva**
+
+```{r MatriciODInterattiva, message=FALSE,warning=FALSE, echo=FALSE }
+# - RETE visNetwork
+nodes <- cor.graph %>% activate(nodes)
+nodes <- as_tibble(nodes)
+nodes <- as.data.frame(nodes)
+nodes <- nodes %>% rowid_to_column("id")
+colnames(nodes)[2] = "label"
+
+edges <- cor.graph %>% activate(edges)
+edges <- as_tibble(edges)
+edges <- as.data.frame(edges)
+colnames(edges)[1] = "from"
+colnames(edges)[2] = "to"
+colnames(edges)[3] = "weight"
+edges <- mutate(edges, width = weight/1000)
+edges<-edges[!(edges$from==edges$to),]
+visNetwork(nodes, edges)
+```
+
+## Effetto dei Lockdown
+
+### Italia
+Per effetto dei Lockdown la **mobilita' in italia** si e' proggressivamente ridotta da una **Baseline** del **100%** ad un circa **15%** attuale. Nel grafico sono evidenziate in arancione le tre misure adottate dal governo (25 Febbraio, 8 e 12 Marzo). Le tre curve rappresentano i trend individiuati da Apple e si riferiscono a: Persone a piedi, con i mezzi di trasporto pubblico e con i mezzi di trasporto privato.
+
+Se compariamo la **riduzione di mobilita'** con il **numero di nuovi casi giornalieri** notiamo che poco dopo meta' aprile quest'ultimo e' ritornato circa ai livelli del 12 Marzo.
+
+```{r Lockdown1, message=FALSE,warning=FALSE, echo=FALSE }
+# confronto nuovi casi mobilita' (matrice nazionale)
+MobilitaNazionale <- Mobilita[Mobilita$Country_Region == "Italy",]
+Pairvar <- c("data","nuovi_positivi")
+Pairdf <- Nazionale[Pairvar]
+Pairdf$data <- as.Date(Pairdf$data )
+MobilitaNazionale <- left_join(MobilitaNazionale,Pairdf,by = c("Date" = "data"))
+MobilitaNazionale[is.na(MobilitaNazionale)] <- 0
+rm(Pairdf)
+ggplot(MobilitaNazionale, aes(x=Date, y=Value*100, group=transportation_type, color=transportation_type)) +
+  geom_line(size=1) + 
+#  geom_line( aes(y=nuovi_positivi), size=1, color="green4") +
+  geom_smooth( aes(y=nuovi_positivi), size=1, color="brown3", 
+  method = "lm", formula = y ~ poly(x, 4), se = FALSE) +
+  scale_y_continuous(
+    name = "% Mobilita' (10.000 baseline)",
+    sec.axis = sec_axis(trans=~.*1, name="Nuovi Casi giornalieri")
+  ) + 
+  theme(
+    axis.title.y = element_text(color = "black", size=13),
+    axis.title.y.right = element_text(color = "brown3", size=13),
+    axis.text.x = element_text(angle = 90)
+  ) +
+  geom_hline(yintercept = 10000, color="green4", size=0.5, linetype=2) +
+  geom_vline(xintercept = as.Date("2020-02-25"), color="chocolate", size=1) +
+  geom_vline(xintercept = as.Date("2020-03-08"), color="chocolate", size=1) +
+  geom_vline(xintercept = as.Date("2020-03-12"), color="chocolate", size=1) +
+  annotate("rect", xmin = as.Date("2020-03-12"), xmax = max(MobilitaNazionale$Date), ymin = 0, ymax = 20000, alpha = .1) +
+  annotate(geom="text", x=as.Date("2020-03-28"), y=15000, label="Movimenti non Essenziali",color="black") +
+  annotate(geom="text", x=as.Date("2020-02-01"), y=1000, label="Nuovi Casi Giornalieri",color="brown3") +
+  annotate(geom="text", x=as.Date("2020-03-28"), y=10500, label="Baseline Mobilita'",color="green4") +
+  annotate(geom="text", x=as.Date("2020-03-04"), y=15000, label="Date Lockdown",color="chocolate") +
+  ggtitle("Mobilita' vs nuovi casi giornalieri (Smooth 4)")
+```
+
+
+Il **video** seguente mostra una **simulazione** dell'effetto della riduzione di mobilita' sulle connessioni tra le varie provincie. In qualche modo evidenzia quali **"catene di contagio"** a livello nazionale vengono rescisse. I dati sono naturalmente una stima in quando vengono rescisse le catene "deboli" sotto i 1000 spostamenti ipotzzando una minor probabilita' di diffusione extra provincia.
+
+<center>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/9M2_2hsxWCU" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+</center>
+
+
+### Worldwide
+
+```{r Lockdown3, message=FALSE,warning=FALSE, echo=FALSE }
+Mobilita$Country_Region <- gsub("United States", "US", Mobilita$Country_Region)
+Mobilita$Country_Region <- gsub("UK", "United Kingdom", Mobilita$Country_Region)
+wwcases <- wwcases[wwcases$Province_State== "",] # elimina righe con Provincia o stato e tiene solo righe country
+LockDown <- LockDown[LockDown$Province == "",] # elimina righe con Provincia o stato e tiene solo righe country
+
+# Plot confronti
+PlotMobilita <- function (inputCountry) {
+  lockdowndate  <- as.Date(LockDown[LockDown$Country_Region==inputCountry,3])
+  Pairdf <- wwcases[wwcases$Country_Region == inputCountry,]
+  Pairvar <- c("Country_Region","Date", "ConfirmedCases")
+  Pairdf <- Pairdf[Pairvar]
+  Pairdf$diff <-c(0,diff(Pairdf$ConfirmedCases))
+  Pairdf <- left_join(Pairdf,Mobilita,by = c("Country_Region" = "Country_Region", "Date" = "Date"))
+  Pairdf <- Pairdf[complete.cases(Pairdf), ]
+  ggplot(Pairdf, aes(x=Date, y=Value*100, group=transportation_type, color=transportation_type)) +
+    #  geom_line( aes(y=diff), size=1, color="green4") +
+    geom_smooth( aes(y=diff), size=1, color="brown3", 
+                 method = "lm", formula = y ~ poly(x, 4), se = FALSE) +
+    geom_line(size=1) + 
+    scale_y_continuous(
+      name = "% Mobilita' (10.000 baseline)",
+      sec.axis = sec_axis(trans=~.*1, name="Nuovi Casi giornalieri")
+    ) + 
+    theme(
+      axis.title.y = element_text(color = "black", size=13),
+      axis.title.y.right = element_text(color = "brown3", size=13),
+      axis.text.x = element_text(angle = 90)
+    ) +
+    geom_vline(xintercept = lockdowndate, color="chocolate", size=0.5) +
+    geom_hline(yintercept = 10000, color="green4", size=0.5, linetype=2) +
+    annotate(geom="text", x=as.Date("2020-03-28"), y=10500, label="Baseline Mobilita'",color="green4") +
+    annotate(geom="text", x=as.Date("2020-02-01"), y=1000, label="Nuovi Casi Giornalieri",color="brown3") +
+    #  annotate(geom="text", x=as.Date("2020-03-20"), y=15000, label="Movimenti non Essenziali",color="black") +
+    #  annotate(geom="text", x=as.Date("2020-03-04"), y=15000, label="Date Lockdown",color="chocolate") +
+    annotate("rect", xmin = lockdowndate, xmax = max(Pairdf$Date), ymin = 0, ymax = 20000, alpha = .1) +
+    ggtitle("Mobilita' - nuovi casi giornalieri (smooth 4)")
+}
+
+
+```
+
+Per l'analisi worldwide ci concentriamo su alcune nazioni: **Spagna**, **Germania** e **Corea del Sud**. 
+
+
+La **Corea del Sud** ha dei pattern di mobilita' decisamente diversi dalle nazioni europee, contiene molto i contagi ed ha solo una diminuzione di mobilita di circa il 50%.
+
+**Spagna** 
+
+Prima dei rispettivi lockdown, la Spagna ha avuto un incremento di mobilita' piu' evidente rispetto a Francia e Germania ed ha  un aumento dei casi maggiore con un lockdown probabilmente tardivo; il tempo trascorso tra la mobilita' piena ed il circa 15% di mobilita' e' molto breve.
+
+```{r LockdownSpain, message=FALSE,warning=FALSE, echo=FALSE }
+PlotMobilita("Spain")
+```
+
+
+**Germania**
+
+La Germania ha una riduzione della mobilita' minore rispetto alle altre due nazioni europee (poco meno del 50%) ma, nonostante questo, sembra contenere il picco di nuovi contagi.
+
+```{r LockdownGermania, message=FALSE,warning=FALSE, echo=FALSE }
+PlotMobilita("Germany")
+```
+
+**Corea del Sud**
+
+La Corea del Sud e' completamente diversa dalle curve europee ed e' un caso a parte. La riduzione della mobilita' si attesta intorno al 50% ed i nuovi casi sono stati contenuti molto efficacemente.
+
+```{r LockdownKorea, message=FALSE,warning=FALSE, echo=FALSE }
+PlotMobilita("Korea, South")
+```
+
+
+
+# 6 Modello di diffusione
+
+In questa sezione il modello di diffusione del virus viene studiato come analisi di serie temporali (Time Series Forecasting) ed effettuata sul cumulato dei casi di positivita'.
+
+## Analisi modelli
+
+### Gompertz
+
+La diffusione della malattia potrebbe essere modellata utilizzando una **curva a Sigmoide** in quanto la crescita e' inizialmente esponenziale ma rallenta dopo un certo punto di flesso che e' il punto medio della diffusione. 
+
+La funzione scelta e' la funzione di **Gompertz**, funzione sigmoide che descrive la crescita come lenta all'inizio ed alla fine di un determinato periodo di tempo. L'asintoto superiore viene raggiunto molto piu' gradualmente dalla curva rispetto all'asintoto inferiore. Al fine diminuire il rumore generato dalla raccolta dati viene applicata una funzione **LOESS (Local Polynomial Regression)** prima della funzione di Gompertz.
+
+<center>
+
+![](gompertz.jpg)
+<br>*Fig: Gompertz*<br>
+</center>
+<br>
+<br>
+
+I grafici seguenti rappresentano una ipotesi di andamento a Sigmoide sul **totale dei casi** a livello **Nazionale** ed un dettaglio su **Piemonte** e **Lombardia**. I riferimenti verticali **arancioni** sono i **lockdown**.
+
+```{r regrGompertza, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+#Preparazione dati Protezione Civile per input Modello SSlogis 
+myvars <- c("stato","denominazione_regione", "data", "totale_casi", "deceduti")
+df1 <- Regioni[myvars]
+names(df1)[names(df1) == "totale_casi"] <- "ConfirmedCases"
+names(df1)[names(df1) == "data"] <- "Date"
+names(df1)[names(df1) == "deceduti"] <- "Fatalities"
+df1$StatoRegione <- paste0(df1$stato,"-",df1$denominazione_regione)
+df1$denominazione_regione <- NULL
+myvars <- c("stato", "data", "totale_casi", "deceduti")
+df2 <- Nazionale[myvars]
+names(df2)[names(df2) == "totale_casi"] <- "ConfirmedCases"
+names(df2)[names(df2) == "data"] <- "Date"
+names(df2)[names(df2) == "deceduti"] <- "Fatalities"
+df2$StatoRegione <- paste0(df2$stato,"-")
+trainItalia <- rbind(df1,df2)
+rm(df1)
+rm(df2)
+trainItalia$Date <- as.Date(trainItalia$Date)
+testItalia <- trainItalia
+testItalia$ConfirmedCases <- 0
+testItalia$Fatalities <- 0
+testItalia$Date <- testItalia$Date + (max(trainItalia$Date)-min(trainItalia$Date)) +1
+testItalia <- testItalia[testItalia$Date < (min(testItalia$Date) + 30), ] # previsione a 30gg
+
+firstlockdown <- as.numeric(as.Date("2020-03-08") - as.Date("2020-02-24")) # first lockdown
+secondlockdown <- as.numeric(as.Date("2020-03-12") - as.Date("2020-02-24")) # second lockdown
+
+
+CovidGompertzFunctionItalia <- function (InputRegione) {
+  trainCountry <- trainItalia[ which(trainItalia$StatoRegione==InputRegione), ] 
+  testCountry <- testItalia[ which(testItalia$StatoRegione==InputRegione), ] 
+  testCountry <- testCountry[testCountry$Date > max(trainCountry$Date),] # subset test
+  trainCountry$days <- as.integer(trainCountry$Date - min(trainCountry$Date) + 1) 
+  testCountry$days <- as.integer(testCountry$Date - min(trainCountry$Date) + 1)
+  diffdaymaxindexConfirmedCases <- which.max(diff(trainCountry$ConfirmedCases))
+  diffdaymaxindexFatalities <- which.max(diff(trainCountry$Fatalities))
+  
+  # Loess
+  fitLoessConfirmedCases <- loess(ConfirmedCases ~ days, data = trainCountry, span=0.4)
+  trainCountry$ConfirmedCasesLoess <- predict(fitLoessConfirmedCases, trainCountry)
+  fitLoessFatalities <- loess(Fatalities ~ days, data = trainCountry)
+  trainCountry$FatalitiesLoess <- predict(fitLoessFatalities, trainCountry)
+  
+  fitConfirmedCaseslogis <- tryCatch(
+    {
+    #  nlsLM(ConfirmedCasesLoess~SSlogis(days, Asym, xmid, scal),
+    #        start = list(Asym = max(trainCountry$ConfirmedCases),
+    #                     xmid = trainCountry$days[diffdaymaxindexConfirmedCases],
+    #                     scal = 1), 
+    #        data=trainCountry,
+    #        control=nls.lm.control(maxiter = 1000))
+          nlsLM(ConfirmedCasesLoess ~ SSgompertz(days, Asym, b2, b3), 
+            start = list(Asym = max(trainCountry$ConfirmedCasesLoess),
+                         b2 = 3,
+                         b3 = 1), 
+            data = trainCountry,
+            control=nls.lm.control(maxiter = 1000))  
+    },
+    error = function(e) {}
+  )
+  
+  if (all(trainCountry$ConfirmedCases == 0))
+  {
+    trainCountry$PredConfirmedCases  <- 0
+    testCountry$PredConfirmedCases  <- 0
+    StatoRegioneList$RSMLEConfirmedCases [i] <- 0
+  } else
+  {
+    trainCountry$PredConfirmedCases <- predict(fitConfirmedCaseslogis, trainCountry)
+    trainCountry$PredConfirmedCases[trainCountry$PredConfirmedCases < 0] <- 0
+    trainCountry$PredConfirmedCases <- round(trainCountry$PredConfirmedCases, digits=0)
+    testCountry$PredConfirmedCases <- predict(fitConfirmedCaseslogis, testCountry)
+    testCountry$PredConfirmedCases[testCountry$PredConfirmedCases < 0] <- 0
+    testCountry$PredConfirmedCases <- round(testCountry$PredConfirmedCases, digits=0)
+  }
+  
+  # FATALITIES  
+  fitFatalitieslogis <- tryCatch(
+    {
+      #nlsLM(FatalitiesLoess~SSlogis(days, Asym, xmid, scal),
+      #      start = list(Asym = max(trainCountry$Fatalities),
+      #                   xmid = trainCountry$days[diffdaymaxindexFatalities],
+      #                   scal = 1), 
+      #      data=trainCountry,
+      #      control=nls.lm.control(maxiter = 1000))
+            nlsLM(FatalitiesLoess ~ SSgompertz(days, Asym, b2, b3), 
+            start = list(Asym = max(trainCountry$FatalitiesLoess),
+                         b2 = 3,
+                         b3 = 1), 
+            data = trainCountry,
+            control=nls.lm.control(maxiter = 1000))
+    },
+    error = function(e) {}
+  )    
+  
+  if (all(trainCountry$Fatalities == 0))
+  {
+    trainCountry$PredFatalities  <- 0
+    testCountry$PredFatalities  <- 0
+    StatoRegioneList$RSMLEFatalities [i] <- 0
+  } else
+  {
+    trainCountry$PredFatalities <- predict(fitFatalitieslogis, trainCountry)
+    trainCountry$PredFatalities[trainCountry$PredFatalities < 0] <- 0
+    trainCountry$PredFatalities <- round(trainCountry$PredFatalities, digits=0)
+    testCountry$PredFatalities <- predict(fitFatalitieslogis, testCountry)
+    testCountry$PredFatalities[testCountry$PredFatalities < 0] <- 0
+    testCountry$PredFatalities <- round(testCountry$PredFatalities, digits=0)
+  }
+  
+  myvars <- c("StatoRegione", "days", "ConfirmedCases", "Fatalities", "PredConfirmedCases", "PredFatalities")
+  trainCountryPlot <- trainCountry[myvars]
+  myvars <- c("StatoRegione", "days", "PredConfirmedCases", "PredFatalities")
+  testCountryPlot <- testCountry[myvars]
+  testCountryPlot$ConfirmedCases <- 0
+  testCountryPlot$Fatalities <- 0
+  PlotCountry <- rbind(trainCountryPlot,testCountryPlot)
+  PlotCountry$days <- (1:nrow(PlotCountry))
+  return(PlotCountry)
+}
+
+CovidGompertzModelItalia <- function (InputRegione) {
+  trainCountry <- trainItalia[ which(trainItalia$StatoRegione==InputRegione), ] 
+  testCountry <- testItalia[ which(testItalia$StatoRegione==InputRegione), ] 
+  testCountry <- testCountry[testCountry$Date > max(trainCountry$Date),] # subset test
+  trainCountry$days <- as.integer(trainCountry$Date - min(trainCountry$Date) + 1) 
+  testCountry$days <- as.integer(testCountry$Date - min(trainCountry$Date) + 1)
+  diffdaymaxindexConfirmedCases <- which.max(diff(trainCountry$ConfirmedCases))
+  diffdaymaxindexFatalities <- which.max(diff(trainCountry$Fatalities))
+  
+  # Loess
+  fitLoessConfirmedCases <- loess(ConfirmedCases ~ days, data = trainCountry, span=0.4)
+  trainCountry$ConfirmedCasesLoess <- predict(fitLoessConfirmedCases, trainCountry)
+  fitLoessFatalities <- loess(Fatalities ~ days, data = trainCountry)
+  trainCountry$FatalitiesLoess <- predict(fitLoessFatalities, trainCountry)
+  
+  fitConfirmedCaseslogis <- tryCatch(
+    {
+      #nlsLM(ConfirmedCasesLoess~SSlogis(days, Asym, xmid, scal),
+      #      start = list(Asym = max(trainCountry$ConfirmedCases),
+      #                   xmid = trainCountry$days[diffdaymaxindexConfirmedCases],
+      #                   scal = 1), 
+      #      data=trainCountry,
+      #      control=nls.lm.control(maxiter = 1000))
+            nlsLM(ConfirmedCasesLoess ~ SSgompertz(days, Asym, b2, b3), 
+            start = list(Asym = max(trainCountry$ConfirmedCasesLoess),
+                         b2 = 2,
+                         b3 = 1), 
+            data = trainCountry,
+            control=nls.lm.control(maxiter = 1000))
+    },
+    error = function(e) {}
+  )
+  return(fitConfirmedCaseslogis)
+}
+```
+
+**ITALIA**
+
+```{r regrGompertzaItalia, message=FALSE,warning=FALSE, results="hide"}
+PlotCountry <- CovidGompertzFunctionItalia("ITA-")
+
+# total PLot Confirmed Cases
+pl1 <- ggplot(PlotCountry, aes(x=days)) +
+  geom_point( aes(y=ConfirmedCases), size=2, color="green4") + 
+  geom_line( aes(y=PredConfirmedCases), size=1, color="orangered") +
+  scale_y_continuous(
+    name = "ConfirmedCases",
+    sec.axis = sec_axis(~.*1, name="Pred")
+  ) + 
+  theme(
+    axis.title.y = element_text(color = "green4", size=13),
+    axis.title.y.right = element_text(color = "orangered", size=13),
+    axis.text.x = element_text(angle = 90)
+  ) +
+  geom_vline(xintercept = firstlockdown, color="orange", size=1) +
+  geom_vline(xintercept = secondlockdown, color="orange", size=1) +
+  ggtitle(paste0("Confirmed Cases Comparison "))
+
+pl2 <- ggplot(PlotCountry, aes(x=days)) +
+  geom_point( aes(y=Fatalities), size=2, color="green4") + 
+  geom_line( aes(y=PredFatalities), size=1, color="orangered") +
+  scale_y_continuous(
+    name = "Fatalities",
+    sec.axis = sec_axis(~.*1, name="Pred")
+  ) + 
+  theme(
+    axis.title.y = element_text(color = "green4", size=13),
+    axis.title.y.right = element_text(color = "orangered", size=13),
+    axis.text.x = element_text(angle = 90)
+  ) +
+  geom_vline(xintercept = firstlockdown, color="orange", size=1) +
+  geom_vline(xintercept = secondlockdown, color="orange", size=1) +
+  ggtitle(paste0("Fatalities Comparison "))
+
+grid.arrange(pl1, pl2, ncol=2)
+
+#Model and residual
+ModelCountry <- CovidGompertzModelItalia ("ITA-")
+summary(ModelCountry)
+fitres <- nlsResiduals(ModelCountry)
+plot(fitres, which = 0)
+```
+
+**LOMBARDIA**
+
+```{r regrGompertzaLombardia, message=FALSE,warning=FALSE, results="hide"}
+PlotCountry <- CovidGompertzFunctionItalia("ITA-Lombardia")
+
+# total PLot Confirmed Cases
+pl1 <- ggplot(PlotCountry, aes(x=days)) +
+  geom_point( aes(y=ConfirmedCases), size=2, color="green4") + 
+  geom_line( aes(y=PredConfirmedCases), size=1, color="orangered") +
+  scale_y_continuous(
+    name = "ConfirmedCases",
+    sec.axis = sec_axis(~.*1, name="Pred")
+  ) + 
+  theme(
+    axis.title.y = element_text(color = "green4", size=13),
+    axis.title.y.right = element_text(color = "orangered", size=13),
+    axis.text.x = element_text(angle = 90)
+  ) +
+  geom_vline(xintercept = firstlockdown, color="orange", size=1) +
+  geom_vline(xintercept = secondlockdown, color="orange", size=1) +
+  ggtitle(paste0("Confirmed Cases Comparison "))
+
+pl2 <- ggplot(PlotCountry, aes(x=days)) +
+  geom_point( aes(y=Fatalities), size=2, color="green4") + 
+  geom_line( aes(y=PredFatalities), size=1, color="orangered") +
+  scale_y_continuous(
+    name = "Fatalities",
+    sec.axis = sec_axis(~.*1, name="Pred")
+  ) + 
+  theme(
+    axis.title.y = element_text(color = "green4", size=13),
+    axis.title.y.right = element_text(color = "orangered", size=13),
+    axis.text.x = element_text(angle = 90)
+  ) +
+  geom_vline(xintercept = firstlockdown, color="orange", size=1) +
+  geom_vline(xintercept = secondlockdown, color="orange", size=1) +
+  ggtitle(paste0("Fatalities Comparison "))
+
+grid.arrange(pl1, pl2, ncol=2)
+
+#Model and residual
+ModelCountry <- CovidGompertzModelItalia ("ITA-Lombardia")
+summary(ModelCountry)
+fitres <- nlsResiduals(ModelCountry)
+plot(fitres, which = 0)
+```
+
+**PIEMONTE**
+
+```{r regrGompertzaPiemonte, message=FALSE,warning=FALSE, results="hide"}
+PlotCountry <- CovidGompertzFunctionItalia("ITA-Piemonte")
+
+# total PLot Confirmed Cases
+pl1 <- ggplot(PlotCountry, aes(x=days)) +
+  geom_point( aes(y=ConfirmedCases), size=2, color="green4") + 
+  geom_line( aes(y=PredConfirmedCases), size=1, color="orangered") +
+  scale_y_continuous(
+    name = "ConfirmedCases",
+    sec.axis = sec_axis(~.*1, name="Pred")
+  ) + 
+  theme(
+    axis.title.y = element_text(color = "green4", size=13),
+    axis.title.y.right = element_text(color = "orangered", size=13),
+    axis.text.x = element_text(angle = 90)
+  ) +
+  geom_vline(xintercept = firstlockdown, color="orange", size=1) +
+  geom_vline(xintercept = secondlockdown, color="orange", size=1) +
+  ggtitle(paste0("Confirmed Cases Comparison "))
+
+pl2 <- ggplot(PlotCountry, aes(x=days)) +
+  geom_point( aes(y=Fatalities), size=2, color="green4") + 
+  geom_line( aes(y=PredFatalities), size=1, color="orangered") +
+  scale_y_continuous(
+    name = "Fatalities",
+    sec.axis = sec_axis(~.*1, name="Pred")
+  ) + 
+  theme(
+    axis.title.y = element_text(color = "green4", size=13),
+    axis.title.y.right = element_text(color = "orangered", size=13),
+    axis.text.x = element_text(angle = 90)
+  ) +
+  geom_vline(xintercept = firstlockdown, color="orange", size=1) +
+  geom_vline(xintercept = secondlockdown, color="orange", size=1) +
+  ggtitle(paste0("Fatalities Comparison "))
+
+grid.arrange(pl1, pl2, ncol=2)
+
+#Model and residual
+ModelCountry <- CovidGompertzModelItalia ("ITA-Piemonte")
+summary(ModelCountry)
+fitres <- nlsResiduals(ModelCountry)
+plot(fitres, which = 0)
+```
+
+Sull'ipotesi Regressione Sigmoide il paper **Prediction and analysis of Coronavirus Disease 2019** mette a confronto tre tipi di modelli per la Cina: Logistic, Gompertz, Bertalanffy
+
+Questi modelli sembra abbiamo raggiunto performance differenti a seconda della zona della Cina su cui e' stata effettuata l'analisi (Wuhan, non-Hubei .....). 
+
+*Prediction and analysis of Coronavirus Disease 2019
+China university of Geosciences (Beijing), Stanford University, Stanford, CA 94305, USA*
+
+<https://arxiv.org/ftp/arxiv/papers/2003/2003.05447.pdf>
+
+### SIR
+
+I modelli **compartimentali** sono tecniche per modellare le malattie infettive e prevede che la popolazione sia divisa in compartimenti con caratteristiche differenti tra loro.
+Il modello SIR e' un modello compartimentale semplice e prevede tre gruppi in cui la popolazione puo' essere:
+ 
+* **S** sana ma suscettibile alla malattia
+
+* **I** con l'infezione  
+
+* **R** ripresa dall'infezione
+
+Per modellare la dinamica dell'epidemia servono tre equazioni differenziali e relativi parametri che definiscono la trasizione tra i gruppi:
+
+* **beta** parametro che controlla la transizione tra S e I
+
+* **gamma** parametro controlla la transizione tra I e R
+
+<center>
+
+![](SIRA.png)
+<br>*Fig: Modello SIR*<br>
+</center>
+<br>
+<br>
+
+Per adattare il modello ai dati e' necessario risolvere le equazioni differenziali e ridurre al minimo la somma delle differenze al quadrato tra il numero di I infetti ed il numero corrispondente di casi previsti nel modello (ad un tempo t). Un numero importante nel modello e' il numero di riproduzione di base **R0** che indica il numero di nuovi casi generati in media da un singolo caso durante il proprio periodo infettivo. 
+
+<center>
+
+![](SIRB.png)
+<br>*Fig: Equazioni differenziali e RSS (residual sum of squares)*<br>
+</center>
+<br>
+<br>
+
+
+**SIR a livello Nazionale**
+
+Come **dati iniziali** per il modello a livello **Nazionale** prendiamo in considerazione i 224 casi positivi (I) al 24 febbraio ed una popolazione Italiana (S) di circa **60 milioni** di individui.
+
+
+```{r SIR, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+# dati iniziali
+Infected <- Nazionale$totale_positivi
+Day <- 1:(length(Infected))
+N <- 60000000 # population of Italy
+init <- c(S = N-Infected[1], I = Infected[1], R = 1) # giorno 0 (1 guarito a livello nazionale)
+
+#funzione
+# Per modellare la dinamica dell'epidemia abbiamo bisogno di tre equazioni differenziali
+# una per il cambiamento in ciascun gruppo dove:
+# beta: parametro che controlla la transizione tra S e I
+# gamma controlla la transizione tra I e R
+SIR <- function(time, state, parameters) {
+  par <- as.list(c(state, parameters))
+  with(par, {
+    dS <- -beta/N * I * S
+    dI <- beta/N * I * S - gamma * I
+    dR <- gamma * I
+    list(c(dS, dI, dR))
+  })
+}
+
+# Per adattare il modello ai dati abbiamo bisogno di : 
+# - un risolutore per equazioni differenziali (funzione ode)
+# - un ottimizzatore (funzione di ottimizzazione di base R)
+# Bisogna ridurre al minimo la somma delle differenze al quadrato 
+# tra il numero di I infetti a tempo t ed il numero corrispondente di casi previsti modello
+RSS <- function(parameters) {
+  names(parameters) <- c("beta", "gamma")
+  out <- ode(y = init, times = Day, func = SIR, parms = parameters)
+  fit <- out[ , 3]
+  sum((Infected - fit)^2)
+}
+Opt <- optim(c(0.5, 0.5), RSS, method = "L-BFGS-B", lower = c(0, 0), upper = c(1, 1)) # optimize with some sensible conditions
+Opt_par <- setNames(Opt$par, c("beta", "gamma"))
+
+# Fitting del modello ad un tempo t
+t <- 1:120 # time in days
+fit <- data.frame(ode(y = init, times = t, func = SIR, parms = Opt_par))
+
+# R0 quante persone sane vengono infettate da una persona malata in media
+R0 <- setNames(Opt_par["beta"] / Opt_par["gamma"], "R0")
+MaxInf <- fit[fit$I == max(fit$I), "I", drop = FALSE] # Massimo della pandemia (infetti)
+
+```
+
+Il modello base mostra i grafici SIR ed i relativi valori di beta, gamma e R0.
+Il valore di **R0** calcolato ad oggi e': (**`r R0`.**)
+
+```{r SIRPlot, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+#ggplot
+title <- bquote("SIR Modello Base")
+subtit <- bquote(list(beta==.(Opt$par[1]),~gamma==.(Opt$par[2]), R0==.(as.numeric(R0))))
+Nazionale$giorni <- 1:nrow(Nazionale) # allineamento plot points (dati reali) con SIR
+ggplot(fit ,aes(x=time))+
+  ggtitle(bquote(atop(bold(.(title)),atop(bold(.(subtit))))))+
+  geom_line(aes(y=S,colour="Susceptible"))+
+  geom_line(aes(y=I,colour="Infected"))+
+  geom_line(aes(y=R,colour="Recovered"))+
+  geom_point(data = Nazionale, aes(x = giorni, y = totale_positivi, colour="Infected")) +
+  geom_point(data = Nazionale, aes(x = giorni, y = dimessi_guariti + deceduti, colour="Recovered")) +
+  geom_point(data = Nazionale, aes(x = giorni, y = N-totale_positivi, colour="Susceptible")) +
+  ylab(label="Proportion")+
+  xlab(label="Time (days)")+
+  theme(legend.justification=c(1,0), legend.position=c(0.9,0.8))+
+  theme(legend.title=element_text(size=12,face="bold"),
+        legend.background = element_rect(fill='#FFFFFF',
+                                         size=0.5,linetype="solid"),
+        legend.text=element_text(size=10),
+        legend.key=element_rect(colour="#FFFFFF",
+                                fill='#C2C2C2',
+                                size=0.25,
+                                linetype="solid"))+
+  scale_colour_manual("SIR",
+                      breaks=c("Susceptible","Infected","Recovered"),
+                      values=c("blue","red","darkgreen")) 
+```
+
+Visti i **valori numerici elevati** e' preferibile utilizzare una **scala logaritmica**.
+
+Nel grafico le linee continue rappresentano il modello SIR con visualizzazione su scala logaritmica, i punti(blu, rossi e verdi) rappresentano i valori osservati ad oggi a livello Nazionale. Quello che si nota e' un numero di R (recovered) minore di I (Infected) ed una curvatura che lascia intravedere un picco di infetti e di persone riprese **minore** di quello ipotizzato dal modello e con possibile traiettoria piu' contenuta.  
+
+```{r SIRPlotLOG, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+title <- bquote("SIR Modello Base (scala Logaritmica)")
+subtit <- bquote(list(beta==.(Opt$par[1]),~gamma==.(Opt$par[2]), R0==.(as.numeric(R0))))
+ggplot(fit ,aes(x=time))+
+  ggtitle(bquote(atop(bold(.(title)),atop(bold(.(subtit))))))+
+  geom_line(aes(y=S,colour="Susceptible"))+
+  geom_line(aes(y=I,colour="Infected"))+
+  geom_line(aes(y=R,colour="Recovered"))+
+  geom_point(data = Nazionale, aes(x = giorni, y = totale_positivi, colour="Infected")) +
+  geom_point(data = Nazionale, aes(x = giorni, y = dimessi_guariti, colour="Recovered")) +
+  geom_point(data = Nazionale, aes(x = giorni, y = N-totale_positivi, colour="Susceptible")) +
+  ylab(label="Popolazione")+
+  xlab(label="Giorni")+
+  theme(legend.justification=c(1,0), legend.position=c(0.9,0.8))+
+  theme(legend.title=element_text(size=12,face="bold"),
+        legend.background = element_rect(fill='#FFFFFF',
+                                         size=0.5,linetype="solid"),
+        legend.text=element_text(size=10),
+        legend.key=element_rect(colour="#FFFFFF",
+                                fill='#C2C2C2',
+                                size=0.25,
+                                linetype="solid"))+
+  scale_colour_manual("SIR",
+                      breaks=c("Susceptible","Infected","Recovered"),
+                      values=c("blue","red","darkgreen")) +
+  scale_y_log10()
+```
+
+**Limiti del modello**
+
+Una possibile spiegazione della discrepanza tra modello e valori reali e' che il Modello SIR e' un modello che fa alcune ipotesi:
+
+* **Nessuna incubazione** o periodo di latenza. Un periodo di incubazione ritarda l'intera sequenza temporale dell'epidemia. 
+
+* Esiste **un solo tipo di individuo infettivo**. Nel mondo reale, diversi sistemi immunitari rispondono in modo diverso al virus, portando alcune persone ad essere completamente asintomatiche ed a casi lievemente infettivi. Nel caso di CoVID19 si ritiene che il numero di casi asintomatici sia pari o superiore al 40%.
+
+* Il modello **non tiene conto** che si sono attuate procedure di **lockdown** per cercare di contenere la diffusione della epidemia e che probabilmente hanno avuto un effetto positivo.
+
+* Un presupposto e' che la **popolazione** sia **mista** e che ogni individuo sia in potenziale contatto con qualsiasi altro individuo. Questo ovviamente non e' possibile ma puo' essere un'approssimazione abbastanza buona per l'analisi qualitativa delle dinamiche epidemiche. Nella realta' paesi e citta' non sono popolazioni omogenee e vi sono transizioni tra aree di popolazione (come evidenziato nella matrice OD).
+
+Questo articolo fornisce dettagli ulteriori dei concetti espressi in questa analisi su SIR.
+
+<https://medium.com/data-for-science/epidemic-modeling-101-or-why-your-covid19-exponential-fits-are-wrong-97aa50c55f8>
+
+
+### ARIMA
+
+ARIMA e' un modello autoregressivo (AR) a media mobile (MA) ed e' un tipo di modello matematico che fornisce istante per istante un valore di uscita basandosi sui precedenti valori in entrata e in uscita. 
+
+* **AR** sta per regressione automatica (p)
+
+* **I** sta per termine di differenziazione (d)
+
+* **MA** sta per media mobile (q)
+
+Il modello e' realizzato con dati a livello **nazionale**.
+
+Prima di tutto e' necessario verificare le funzioni **Stazionarieta'** e pre-autocorrelazione **ACF** e **Partial ACF**.
+
+**Verifica se i dati delle serie storiche sono stazionari**
+
+A meno che le serie storiche non siano stazionarie, non e' possibile creare un modello. Nei casi in cui i criteri di stazionarieta'  vengono violati, e' necessario rendere  stazionarie le serie temporali e provare modelli stocastici per le previsioni. **Il test Dickey-Fuller** viene eseguito per verificare se i dati sono stazionari.
+L'Ipotesi nulla e' che sia presente una "unit root" nel campione e quindi la serie temporale sia non stazionaria. L'ipotesi alternativa e' che le serie storiche siano stazionarie.
+
+```{r Arima1, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+adf.test(Nazionale$totale_casi, alternative="stationary", k=0 ) # processo stazionario
+par(mfrow=c(1,2))
+acf(Nazionale$totale_casi, lag.max=34) # smorzata indice di AR (valore sopra soglia 1)
+pacf(Nazionale$totale_casi, lag.max=34) # picco iniziale inidice di MA (valore sopra soglia 1)
+```
+
+p-value < 0,05 quindi la serie temporale sembra stazionaria, possiamo ora eseguire la modellazione con ARIMA.
+
+**Auto ARIMA**
+
+Per deteminare il modello ARIMA migliore utiliziamo una funzione basata sull'algoritmo di **Hyndman-Khandakar** (Hyndman & Khandakar, 2008) che minimizza AIC (Akaike information criterion) ed MLE (Maximum Likelihood estimator). 
+
+```{r Arima2, warning=FALSE, echo=FALSE}
+autoArimaFit <- auto.arima(Nazionale$totale_casi, seasonal=FALSE, stepwise=FALSE, approximation=FALSE)
+autoArimaFit
+accuracy(autoArimaFit)
+```
+
+**Analisi dei residui**
+
+Il test **Box Ljung** viene eseguito per verificare l'autocorrelazione (l'ipotesi nulla e' la non autocorrelazione). Se il p_value > 0,5 l'ipotesi nulla e' accettata ed i residui sono indipendenti, garanzia di un modello corretto.
+
+```{r Arima3, warning=FALSE, echo=FALSE}
+#resauto <- resid(autoArimaFit)
+#Box.test(resauto, type = "Ljung-Box", lag = 12, fitdf = 2)
+checkresiduals(autoArimaFit)
+
+```
+
+p-values e' di poco inferiore a 0.5 e non accettiamo l'ipotesi nulla di Non-autocorrelazione.
+
+Le aree di **Forecast** sono: Low 80, High 80, Low 95, High 95 e la variabilita' di valori previsti e' alta.
+
+```{r Arima4, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+plot(forecast(autoArimaFit, h=20))
+```
+
+ARIMA **non sembra convincere** come modello di forecast.
+
+## Scelta del modello
+I tre modelli proposti sono interessanti per la predizione dei dati cumulati ma sembra che la **regressione logistica** sia il modello piu' verosimilmente adeguato.
+In particolare la scelta e' **Gompertz** perche' fornisce un RSMLE migliore rispetto ad altre regressioni.
+Prima di applicare la regressione logistica, al fine diminuire il rumore generato dalla raccolta dati, viene applicata una funzione **LOESS (Local Polynomial Regression)**.
+
+## Valutazione del modello 
+Il modello viene applicato e valutato su dati a livello mondiale forniti dal **Johns Hopkins University Center for Systems Science and Engineering (JHU CSSE)**.
+
+```{r LoessSSlogis, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+CovidGompertzFunction <- function (InputCountry) {
+  trainCountry <- train[ which(train$CountryState==InputCountry), ] 
+  testCountry <- test[ which(test$CountryState==InputCountry), ] 
+  testCountry <- testCountry[testCountry$Date > max(trainCountry$Date),] # subset test
+  trainCountry$days <- as.integer(trainCountry$Date - min(trainCountry$Date) + 1) 
+  testCountry$days <- as.integer(testCountry$Date - min(trainCountry$Date) + 1)
+  diffdaymaxindexConfirmedCases <- which.max(diff(trainCountry$ConfirmedCases))
+  diffdaymaxindexFatalities <- which.max(diff(trainCountry$Fatalities))
+  
+  # Loess
+  fitLoessConfirmedCases <- loess(ConfirmedCases ~ days, data = trainCountry, span=0.4)
+  trainCountry$ConfirmedCasesLoess <- predict(fitLoessConfirmedCases, trainCountry)
+  fitLoessFatalities <- loess(Fatalities ~ days, data = trainCountry, span=0.4)
+  trainCountry$FatalitiesLoess <- predict(fitLoessFatalities, trainCountry)
+  
+  fitConfirmedCaseslogis <- tryCatch(
+    {
+      #nlsLM(ConfirmedCasesLoess~SSlogis(days, Asym, xmid, scal),
+      #  start = list(Asym = max(trainCountry$ConfirmedCases),
+      #               xmid = trainCountry$days[diffdaymaxindexConfirmedCases],
+      #               scal = 1), 
+      #                data=trainCountry,
+      #                control=nls.lm.control(maxiter = 1000))
+      nlsLM(ConfirmedCasesLoess ~ SSgompertz(days, Asym, b2, b3), 
+            start = list(Asym = max(trainCountry$ConfirmedCasesLoess),
+                         b2 = 3,
+                         b3 = 1), 
+            data = trainCountry,
+            control=nls.lm.control(maxiter = 1000))
+    },
+    error = function(e) {}
+  )
+  
+  if (all(trainCountry$ConfirmedCases == 0))
+  {
+    trainCountry$PredConfirmedCases  <- 0
+    testCountry$PredConfirmedCases  <- 0
+    CountryStateList$RSMLEConfirmedCases [i] <- 0
+  } else
+  {
+    trainCountry$PredConfirmedCases <- predict(fitConfirmedCaseslogis, trainCountry)
+    trainCountry$PredConfirmedCases[trainCountry$PredConfirmedCases < 0] <- 0
+    trainCountry$PredConfirmedCases <- round(trainCountry$PredConfirmedCases, digits=0)
+    CountryStateList$RSMLEConfirmedCases[i] <- round(rmsle(trainCountry$ConfirmedCases, trainCountry$PredConfirmedCases ), 5)  
+    testCountry$PredConfirmedCases <- predict(fitConfirmedCaseslogis, testCountry)
+    testCountry$PredConfirmedCases[testCountry$PredConfirmedCases < 0] <- 0
+    testCountry$PredConfirmedCases <- round(testCountry$PredConfirmedCases, digits=0)
+
+  }
+  
+  # FATALITIES  
+  fitFatalitieslogis <- tryCatch(
+    {
+      #nlsLM(FatalitiesLoess~SSlogis(days, Asym, xmid, scal),
+      #      start = list(Asym = max(trainCountry$Fatalities),
+      #                   xmid = trainCountry$days[diffdaymaxindexFatalities],
+      #                   scal = 1), 
+      #      data=trainCountry,
+      #      control=nls.lm.control(maxiter = 1000))
+        nlsLM(FatalitiesLoess ~ SSgompertz(days, Asym, b2, b3), 
+              start = list(Asym = max(trainCountry$FatalitiesLoess),
+                           b2 = 3,
+                           b3 = 1), 
+              data = trainCountry,
+              control=nls.lm.control(maxiter = 1000))
+    },
+    error = function(e) {}
+  )    
+  
+  if (all(trainCountry$Fatalities == 0))
+  {
+    trainCountry$PredFatalities  <- 0
+    testCountry$PredFatalities  <- 0
+    CountryStateList$RSMLEFatalities [i] <- 0
+  } else
+  {
+    trainCountry$PredFatalities <- predict(fitFatalitieslogis, trainCountry)
+    trainCountry$PredFatalities[trainCountry$PredFatalities < 0] <- 0
+    trainCountry$PredFatalities <- round(trainCountry$PredFatalities, digits=0)
+    testCountry$PredFatalities <- predict(fitFatalitieslogis, testCountry)
+    testCountry$PredFatalities[testCountry$PredFatalities < 0] <- 0
+    testCountry$PredFatalities <- round(testCountry$PredFatalities, digits=0)
+  }
+  
+  myvars <- c("CountryState", "days", "ConfirmedCases", "Fatalities", "PredConfirmedCases", "PredFatalities")
+  trainCountryPlot <- trainCountry[myvars]
+  myvars <- c("CountryState", "days", "PredConfirmedCases", "PredFatalities")
+  testCountryPlot <- testCountry[myvars]
+  testCountryPlot$ConfirmedCases <- 0
+  testCountryPlot$Fatalities <- 0
+  PlotCountry <- rbind(trainCountryPlot,testCountryPlot)
+  PlotCountry$days <- (1:nrow(PlotCountry))
+  return(PlotCountry)
+}
+
+CovidGompertzModel <- function (InputCountry) {
+  trainCountry <- train[ which(train$CountryState==InputCountry), ] 
+  testCountry <- test[ which(test$CountryState==InputCountry), ] 
+  testCountry <- testCountry[testCountry$Date > max(trainCountry$Date),] # subset test
+  trainCountry$days <- as.integer(trainCountry$Date - min(trainCountry$Date) + 1) 
+  testCountry$days <- as.integer(testCountry$Date - min(trainCountry$Date) + 1)
+  diffdaymaxindexConfirmedCases <- which.max(diff(trainCountry$ConfirmedCases))
+  diffdaymaxindexFatalities <- which.max(diff(trainCountry$Fatalities))
+  
+  # Loess
+  fitLoessConfirmedCases <- loess(ConfirmedCases ~ days, data = trainCountry, span=0.4)
+  trainCountry$ConfirmedCasesLoess <- predict(fitLoessConfirmedCases, trainCountry)
+  fitLoessFatalities <- loess(Fatalities ~ days, data = trainCountry, span=0.4)
+  trainCountry$FatalitiesLoess <- predict(fitLoessFatalities, trainCountry)
+  
+  fitConfirmedCaseslogis <- tryCatch(
+    {
+      #nlsLM(ConfirmedCasesLoess~SSlogis(days, Asym, xmid, scal),
+      #      start = list(Asym = max(trainCountry$ConfirmedCases),
+      #                   xmid = trainCountry$days[diffdaymaxindexConfirmedCases],
+      #                   scal = 1), 
+      #      data=trainCountry,
+      #      control=nls.lm.control(maxiter = 1000))
+      nlsLM(ConfirmedCasesLoess ~ SSgompertz(days, Asym, b2, b3), 
+            start = list(Asym = max(trainCountry$ConfirmedCasesLoess),
+                         b2 = 3,
+                         b3 = 1), 
+            data = trainCountry,
+            control=nls.lm.control(maxiter = 1000))
+    },
+    error = function(e) {}
+  )
+  return(fitConfirmedCaseslogis)
+}
+```
+
+### Italia
+
+**Forecast**
+```{r LoessSSlogisItalia, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+PlotCountry <- CovidGompertzFunction("Italy-")
+
+# total PLot Confirmed Cases
+ggplot(PlotCountry, aes(x=days)) +
+  geom_point( aes(y=ConfirmedCases), size=2, color="green4") + 
+  geom_line( aes(y=PredConfirmedCases), size=1, color="orangered") +
+  scale_y_continuous(
+    name = "ConfirmedCases",
+    sec.axis = sec_axis(~.*1, name="Pred")
+  ) + 
+  theme(
+    axis.title.y = element_text(color = "green4", size=13),
+    axis.title.y.right = element_text(color = "orangered", size=13),
+    axis.text.x = element_text(angle = 90)
+  ) +
+  ggtitle("Confirmed Cases Comparison")
+```
+
+**Analisi modello e Residui**
+```{r residuiItalia, warning=FALSE, echo=FALSE }
+#residual
+ModelCountry <- CovidGompertzModel("Italy-")
+summary(ModelCountry)
+fitres <- nlsResiduals(ModelCountry)
+plot(fitres, which = 0)
+```
+
+### China-Hubei
+
+**Forecast**
+```{r LoessSSlogisChina-Hubei, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+PlotCountry <- CovidGompertzFunction("China-Hubei")
+
+# total PLot Confirmed Cases
+ggplot(PlotCountry, aes(x=days)) +
+  geom_point( aes(y=ConfirmedCases), size=2, color="green4") + 
+  geom_line( aes(y=PredConfirmedCases), size=1, color="orangered") +
+  scale_y_continuous(
+    name = "ConfirmedCases",
+    sec.axis = sec_axis(~.*1, name="Pred")
+  ) + 
+  theme(
+    axis.title.y = element_text(color = "green4", size=13),
+    axis.title.y.right = element_text(color = "orangered", size=13),
+    axis.text.x = element_text(angle = 90)
+  ) +
+  ggtitle("Confirmed Cases Comparison")
+```
+
+**Analisi modello e Residui**
+```{r residuiChina-Hubei, warning=FALSE, echo=FALSE}
+#residual
+ModelCountry <- CovidGompertzModel("China-Hubei")
+summary(ModelCountry)
+fitres <- nlsResiduals(ModelCountry)
+plot(fitres, which = 0)
+```
+
+### US-New York
+
+**Forecast**
+```{r LoessSSlogisUSNewYork, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+PlotCountry <- CovidGompertzFunction("US-New York")
+
+# total PLot Confirmed Cases
+ggplot(PlotCountry, aes(x=days)) +
+  geom_point( aes(y=ConfirmedCases), size=2, color="green4") + 
+  geom_line( aes(y=PredConfirmedCases), size=1, color="orangered") +
+  scale_y_continuous(
+    name = "ConfirmedCases",
+    sec.axis = sec_axis(~.*1, name="Pred")
+  ) + 
+  theme(
+    axis.title.y = element_text(color = "green4", size=13),
+    axis.title.y.right = element_text(color = "orangered", size=13),
+    axis.text.x = element_text(angle = 90)
+  ) +
+  ggtitle("Confirmed Cases Comparison")
+```
+
+**Analisi modello e Residui**
+```{r residuiUSNewYork, warning=FALSE, echo=FALSE}
+#residual
+ModelCountry <- CovidGompertzModel("US-New York")
+summary(ModelCountry)
+fitres <- nlsResiduals(ModelCountry)
+plot(fitres, which = 0)
+```
+
+
+```{r FullModel, message=FALSE,warning=FALSE, echo=FALSE, results="hide"}
+for(i in 1:nrow(CountryStateList)) {
+  trainCountry <- train[ which(train$CountryState==CountryStateList[i,1]), ] 
+  testCountry <- test[ which(test$CountryState==CountryStateList[i,1]), ] 
+  testCountry <- testCountry[testCountry$Date > max(trainCountry$Date),] # subset test
+  trainCountry$days <- as.integer(trainCountry$Date - min(trainCountry$Date) + 1) 
+  testCountry$days <- as.integer(testCountry$Date - min(trainCountry$Date) + 1)
+  diffdaymaxindexConfirmedCases <- which.max(diff(trainCountry$ConfirmedCases))
+  diffdaymaxindexFatalities <- which.max(diff(trainCountry$Fatalities))
+  
+  # Loess
+  fitLoessConfirmedCases <- loess(ConfirmedCases ~ days, data = trainCountry, span=0.4)
+  trainCountry$ConfirmedCasesLoess <- predict(fitLoessConfirmedCases, trainCountry)
+  fitLoessFatalities <- loess(Fatalities ~ days, data = trainCountry, span=0.4)
+  trainCountry$FatalitiesLoess <- predict(fitLoessFatalities, trainCountry)
+  
+    fitConfirmedCaseslogis <- tryCatch(
+    {
+      #nlsLM(ConfirmedCasesLoess~SSlogis(days, Asym, xmid, scal),
+      #  start = list(Asym = max(trainCountry$ConfirmedCases),
+      #               xmid = trainCountry$days[diffdaymaxindexConfirmedCases],
+      #               scal = 1), 
+      #                data=trainCountry,
+      #                control=nls.lm.control(maxiter = 1000))
+      nlsLM(ConfirmedCasesLoess ~ SSgompertz(days, Asym, b2, b3), 
+            start = list(Asym = max(trainCountry$ConfirmedCasesLoess),
+                         b2 = 3,
+                         b3 = 1), 
+            data = trainCountry,
+            control=nls.lm.control(maxiter = 1000))    },
+    error = function(e) 
+      {
+      #print("ConfirmedCases")
+      #print(i)
+      #print(CountryStateList[i,1])
+      }
+  )
+
+  if (all(trainCountry$ConfirmedCases == 0))
+  {
+    trainCountry$PredConfirmedCases  <- 0
+    testCountry$PredConfirmedCases  <- 0
+    CountryStateList$RSMLEConfirmedCases [i] <- 0
+  } else
+  {
+    trainCountry$PredConfirmedCases <- predict(fitConfirmedCaseslogis, trainCountry)
+    trainCountry$PredConfirmedCases[trainCountry$PredConfirmedCases < 0] <- 0
+    trainCountry$PredConfirmedCases <- round(trainCountry$PredConfirmedCases, digits=0)
+    CountryStateList$RSMLEConfirmedCases[i] <- round(rmsle(trainCountry$ConfirmedCases, trainCountry$PredConfirmedCases ), 5)  
+    testCountry$PredConfirmedCases <- predict(fitConfirmedCaseslogis, testCountry)
+    testCountry$PredConfirmedCases[testCountry$PredConfirmedCases < 0] <- 0
+    testCountry$PredConfirmedCases <- round(testCountry$PredConfirmedCases, digits=0)
+  }
+
+# FATALITIES  
+
+    fitFatalitieslogis <- tryCatch(
+      {
+        #nlsLM(FatalitiesLoess~SSlogis(days, Asym, xmid, scal),
+        #      start = list(Asym = max(trainCountry$Fatalities),
+        #                   xmid = trainCountry$days[diffdaymaxindexFatalities],
+        #                   scal = 1), 
+        #      data=trainCountry,
+        #      control=nls.lm.control(maxiter = 1000))
+        nlsLM(FatalitiesLoess ~ SSgompertz(days, Asym, b2, b3), 
+              start = list(Asym = max(trainCountry$FatalitiesLoess),
+                           b2 = 3,
+                           b3 = 1), 
+              data = trainCountry,
+              control=nls.lm.control(maxiter = 1000))
+      },
+      error = function(e) 
+      {
+      #  print("Fatalities")
+      #  print(i)
+      #  print(CountryStateList[i,1])
+      }
+    )    
+
+    if (all(trainCountry$Fatalities == 0))
+    {
+      trainCountry$PredFatalities  <- 0
+      testCountry$PredFatalities  <- 0
+      CountryStateList$RSMLEFatalities [i] <- 0
+    } else
+    {
+      trainCountry$PredFatalities <- predict(fitFatalitieslogis, trainCountry)
+      trainCountry$PredFatalities[trainCountry$PredFatalities < 0] <- 0
+      trainCountry$PredFatalities <- round(trainCountry$PredFatalities, digits=0)
+      CountryStateList$RSMLEFatalities[i] <- round(rmsle(trainCountry$Fatalities, trainCountry$PredFatalities ), 5)  
+      testCountry$PredFatalities <- predict(fitFatalitieslogis, testCountry)
+      testCountry$PredFatalities [testCountry$PredFatalities < 0] <- 0
+      testCountry$PredFatalities <- round(testCountry$PredFatalities, digits=0)
+    }
+    
+  trainPred <- rbind(trainPred, trainCountry)
+  testPred <- rbind(testPred, testCountry)
+}
+
+
+#  SUBMISSION ############################################################
+#myvars <- c("ForecastId", "PredConfirmedCases", "PredFatalities")
+#Submission <- testPred[myvars]
+#names(Submission)[names(Submission) == "PredConfirmedCases"] <- "ConfirmedCases"
+#names(Submission)[names(Submission) == "PredFatalities"] <- "Fatalities"
+#write.csv(Submission, file="submission.csv", row.names = F)
+
+#Total RMSLE
+RMSLE_nuovi_casi <- sum(CountryStateList$RSMLEConfirmedCases)/nrow(CountryStateList)
+RMSLE_decessi <- sum(CountryStateList$RSMLEFatalities)/nrow(CountryStateList)
+```
+
+
+## Conclusioni 
+
+* La **significativita' dei parametri** presi in considerazione (Asym, xmid, scal) e' buona.
+
+* Il **Residual standard error** (errore standard residuo) e' una misura della qualita' della regressione. RSE e' il valore medio di quanto la risposta devia dalla linea di regressione reale. Nel caso della regressione adottata i valori di RSE variano tra 500 e 800.
+
+* Il **diagramma "Residual vs Fitted"** e' utile per la valutazione della linearita' e dell'omoscedasticita'. La linearitea' viene soddisfatta se i residui (punti sul diagramma) sono distribuiti principalmente sulla linea dello zero. Se non vi e' alcun modello visibile dei residui allora il diagramma puo' siginificare l'esistenza di Omoscedasticita' Nel caso della della regressione adottata notiamo funzioni "sinusoidali" che sono distributi sulla linea dello zero indica linearita' e non Omoscedasticita'(stiamo stimando una sola variabile).
+
+* Il **diagramma QQ** viene utilizzato per verificare l'assunzione di normalita', piu' i punti residui sono vicini alla linea, piu' e' probabile che l'assunzione della normalitea' sia soddisfatta. Come possiamo vedere, questo e' principalmente il caso dei valori osservati.
+
+* Come **metrica** per  valutare il modello si e' considerato **RMSLE** root mean squared logarithmic error.  L'RMSLE Nuovi Casi e'  (**`r RMSLE_nuovi_casi`**), l'RMSLE Decessi:  (**`r RMSLE_decessi`**)
+
+<center>
+
+![](RMSLE.jpg)
+<br>*Fig: root mean squared logarithmic error*<br>
+</center>
+<br>
+<br>
+
+
+
+
